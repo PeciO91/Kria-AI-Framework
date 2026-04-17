@@ -9,6 +9,7 @@ models/*.pb
 models/*.h5
 models/*.prototxt
 models/*.caffemodel
+models/*.pt
 
 # Vitis AI výstupy
 build/
@@ -25,3 +26,5 @@ vaitrace_resources/
 # IDE nastavení
 .vscode/
 .idea/
+
+quantize_result/

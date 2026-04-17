@@ -6,6 +6,10 @@ BOARD_NAME = "Xilinx Kria KV260"
 DPU_ARCH = "DPUCZDX8G_ISA1_B4096"
 DPU_FREQ_MHZ = 300
 
+# The DPU Fingerprint is the unique hardware ID of your DPU configuration.
+# Obtained via 'xdputil query' on the target board.
+DPU_FINGERPRINT = "0x101000056010407"
+
 # Theoretical Peak Performance Calculation (GOP/s)
 # Formula: (4096 ops * 300 MHz * 2 operations per MAC) / 1000
 DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000 
