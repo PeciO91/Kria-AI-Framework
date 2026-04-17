@@ -10,6 +10,10 @@ DPU_FREQ_MHZ = 300
 # Obtained via 'xdputil query' on the target board.
 DPU_FINGERPRINT = "0x101000056010407"
 
+# Path to the Architecture JSON inside Vitis AI Docker
+# This file tells the compiler how to map instructions to your specific DPU
+DPU_ARCH_PATH = "/opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json"
+
 # Theoretical Peak Performance Calculation (GOP/s)
 # Formula: (4096 ops * 300 MHz * 2 operations per MAC) / 1000
 DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000 
