@@ -7,7 +7,7 @@ import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 import pytorch_nndct
 
-# Path
+# --- Path auto-fix to find configs in project root ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if parent_dir not in sys.path:
@@ -31,13 +31,19 @@ def run_quantization():
     m_cfg = get_active_model()
     d_cfg = get_active_dataset()
     
+    # ---------------------------------------------------------
+    # AUTOMATIC SUBSET OPTIMIZATION
+    # For 'test' mode, we only need 1 image for export.
+    # For 'calib' mode, we use the value from command line arguments.
+    actual_subset_len = 1 if args.quant_mode == 'test' else args.subset_len
+    # ---------------------------------------------------------
+    
     # Define and create output directory
     output_dir = os.path.join("build", m_cfg['name'].lower(), "quantize_result")
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"=== Starting Quantization: {m_cfg['name']} ===")
-    print(f"=== Mode: {args.quant_mode} | Output: {output_dir} ===")
-
+    print(f"=== Mode: {args.quant_mode} | Subset Length: {actual_subset_len} ===")
     device = torch.device("cpu") # Quantization usually runs on CPU
     
     # 2. Dynamic Model Loading
@@ -91,14 +97,14 @@ def run_quantization():
     
     quant_model = quantizer.quant_model
 
-    # 5. Run Execution Loop (Forward Pass)
-    print(f"Running forward pass for {args.subset_len} images...")
+# 5. Run Execution Loop (Forward Pass)
+    print(f"Running forward pass for {actual_subset_len} images...")
     processed_count = 0
     with torch.no_grad():
         for images, _ in loader:
             quant_model(images)
             processed_count += images.size(0)
-            if processed_count >= args.subset_len:
+            if processed_count >= actual_subset_len:
                 break
 
     # 6. Export Final Results

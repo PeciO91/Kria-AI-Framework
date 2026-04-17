@@ -5,7 +5,7 @@ DATASETS = {
     "intel_images": {
         "name": "Intel Image Classification",
         "path": "data/intel_images/seg_test",      # Path for inference testing
-        "calib_path": "data/intel_images/seg_calib", # Path for quantization calibration
+        "calib_path": "data/intel_images/calibration_data", # Path for quantization calibration
         "classes": ["buildings", "forest", "glacier", "mountain", "sea", "street"],
         "input_shape": (150, 150), # Height, Width as defined by the dataset
         "normalization": {
