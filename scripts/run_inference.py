@@ -7,10 +7,15 @@ import time
 import threading
 import queue
 import argparse
+import sys
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset
 from board_config import ACTIVE_THREADS, DPU_PEAK_GOPS, get_power_mw
+
+# Progress Tracking Globals
+progress_cnt = 0
+progress_lock = threading.Lock()
 
 # =============================================================
 # POWER MONITORING
@@ -57,6 +62,7 @@ def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fi
 # CONSUMER: DPU Inference
 # =============================================================
 def consumer_worker(thread_id, input_queue, dpu_subgraph, results):
+    global progress_cnt
     runner = vart.Runner.create_runner(dpu_subgraph, "run")
     output_tensors = runner.get_output_tensors()
     output_ndim = tuple(output_tensors[0].dims)
@@ -83,6 +89,11 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, results):
         if np.argmax(output_data[0][0]) == int(class_idx):
             local_correct += 1
         local_total += 1
+        
+        # Update progress counter safely
+        with progress_lock:
+            progress_cnt += 1
+            
         input_queue.task_done()
 
     results[thread_id] = (local_correct, local_total, local_dpu_time)
@@ -92,13 +103,14 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, results):
 # MAIN LOGIC
 # =============================================================
 def run_inference(model_id, dataset_id, thread_override):
+    global progress_cnt
     # Load requested configurations
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
     
     # Set thread counts
     num_consumers = thread_override if thread_override else ACTIVE_THREADS
-    num_producers = 4 # Fixed for Kria's 4-core CPU
+    num_producers = 4 
     
     model_name_lower = m_cfg['name'].lower()
     model_path = f"{model_name_lower}_kria.xmodel"
@@ -118,14 +130,12 @@ def run_inference(model_id, dataset_id, thread_override):
     subgraph = [s for s in graph.get_root_subgraph().get_children() 
                 if s.get_attr("device").upper() == "DPU"][0]
 
-    # Get DPU fix point and shape
     dummy_runner = vart.Runner.create_runner(subgraph, "run")
     input_tensors = dummy_runner.get_input_tensors()
     dpu_shape = tuple(input_tensors[0].dims)
     fix_pos = input_tensors[0].get_attr("fix_point")
     del dummy_runner
 
-    # Image collection
     all_images = []
     for c_idx, c_name in enumerate(d_cfg['classes']):
         c_dir = os.path.join(dataset_path, c_name)
@@ -140,25 +150,25 @@ def run_inference(model_id, dataset_id, thread_override):
 
     img_queue = queue.Queue(maxsize=50) 
     results = [None] * num_consumers
+    total_imgs = len(all_images)
     
-    # Split for producers
-    chunk_size = (len(all_images) + num_producers - 1) // num_producers
-    chunks = [all_images[i:i + chunk_size] for i in range(0, len(all_images), chunk_size)]
+    chunk_size = (total_imgs + num_producers - 1) // num_producers
+    chunks = [all_images[i:i + chunk_size] for i in range(0, total_imgs, chunk_size)]
 
-    # Start benchmark
     monitor = PowerMonitor()
     monitor.start()
     idle_p = np.mean([get_power_mw() / 1000.0 for _ in range(5)])
     
     start_wall = time.time()
 
-    # Launch threads
+    # Launch Consumer Threads
     c_threads = []
     for i in range(num_consumers):
         t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, results))
         t.start()
         c_threads.append(t)
 
+    # Launch Producer Threads
     p_threads = []
     for i in range(num_producers):
         t = threading.Thread(target=producer_worker, args=(
@@ -168,9 +178,31 @@ def run_inference(model_id, dataset_id, thread_override):
         t.start()
         p_threads.append(t)
 
-    for t in p_threads: t.join()
-    for _ in range(num_consumers): img_queue.put(None)
-    for t in c_threads: t.join()
+    # 1. Wait for Producers to finish filling the queue while showing progress
+    for t in p_threads:
+        while t.is_alive():
+            with progress_lock:
+                curr = progress_cnt
+            percent = (curr / total_imgs) * 100
+            sys.stdout.write(f"\r[INFO] Progress: {curr}/{total_imgs} ({percent:.1f}%) ")
+            sys.stdout.flush()
+            t.join(0.1)
+
+    # 2. All images preprocessed. Send "None" stop signals to Consumers
+    for _ in range(num_consumers):
+        img_queue.put(None)
+
+    # 3. Wait for Consumers to finish remaining tasks while showing progress
+    for t in c_threads:
+        while t.is_alive():
+            with progress_lock:
+                curr = progress_cnt
+            percent = (curr / total_imgs) * 100
+            sys.stdout.write(f"\r[INFO] Progress: {curr}/{total_imgs} ({percent:.1f}%) ")
+            sys.stdout.flush()
+            t.join(0.1)
+
+    sys.stdout.write(f"\r[INFO] Progress: {total_imgs}/{total_imgs} (100.0%) Done!\n")
 
     end_wall = time.time()
     monitor.stop_evt.set()
@@ -178,11 +210,11 @@ def run_inference(model_id, dataset_id, thread_override):
     # REPORT GENERATION
     total_wall_time = end_wall - start_wall
     total_correct = sum(r[0] for r in results)
-    total_images = sum(r[1] for r in results)
+    total_images_processed = sum(r[1] for r in results)
     total_dpu_busy_time = sum(r[2] for r in results)
 
-    fps_app = total_images / total_wall_time
-    avg_dpu_latency = total_dpu_busy_time / total_images
+    fps_app = total_images_processed / total_wall_time
+    avg_dpu_latency = total_dpu_busy_time / total_images_processed
     fps_dpu_theoretical = 1.0 / avg_dpu_latency
 
     avg_load_pwr = np.mean(monitor.samples) if monitor.samples else idle_p
@@ -194,8 +226,8 @@ def run_inference(model_id, dataset_id, thread_override):
 {"="*60}
   ANALYTICAL REPORT: {m_cfg['name'].upper()} | DPU THREADS: {num_consumers}
 {"="*60}
-System:             {total_images} images
-Overall Accuracy:   {(total_correct/total_images)*100:.2f} %
+System:             {total_images_processed} images
+Overall Accuracy:   {(total_correct/total_images_processed)*100:.2f} %
 {"-"*60}
 Application FPS:    {fps_app:.2f} img/s
 DPU Latency (avg):  {avg_dpu_latency*1000:.2f} ms
