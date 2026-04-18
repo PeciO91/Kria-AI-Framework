@@ -6,7 +6,7 @@ import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 import pytorch_nndct
 
-# --- Path auto-fix to find configs in project root ---
+# --- Path auto-fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if parent_dir not in sys.path:
@@ -18,28 +18,25 @@ from model_utils import prepare_model
 
 # 1. Argument Parser
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, help='Model ID from model_config.py')
-parser.add_argument('--dataset', type=str, help='Dataset ID from dataset_config.py')
+parser.add_argument('--model', type=str, help='Model ID')
+parser.add_argument('--dataset', type=str, help='Dataset ID')
 parser.add_argument('--quant_mode', default='calib', choices=['calib', 'test'])
-parser.add_argument('--subset_len', default=100, type=int, help='Images for calibration')
+parser.add_argument('--subset_len', default=100, type=int, help='Calib images')
 parser.add_argument('--batch_size', default=32, type=int)
-parser.add_argument('--fast_ft', action='store_true', help='Enable Fast Fine-Tuning (AdaQuant)')
+parser.add_argument('--fast_ft', action='store_true', help='Enable Fast Fine-Tuning')
 args = parser.parse_args()
 
-# Evaluation function required by Fast Fine-Tuning
-def evaluate(model, loader, device):
-    """Simple evaluation loop to provide feedback during fine-tuning."""
+# The evaluation function required by Fast Fine-Tuning
+def evaluate(model, loader, loss_fn):
+    """AdaQuant needs to minimize loss, not track accuracy."""
     model.eval()
-    correct = 0
-    total = 0
+    total_loss = 0
     with torch.no_grad():
         for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
             outputs = model(images)
-            _, predicted = torch.max(outputs.data, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    return correct / total
+            loss = loss_fn(outputs, labels)
+            total_loss += loss.item()
+    return total_loss
 
 def run_quantization():
     m_cfg = get_active_model(args.model)
@@ -50,9 +47,9 @@ def run_quantization():
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"\n=== Starting Quantization: {m_cfg['name']} ===")
-    device = torch.device("cpu") # NNDCT quantization usually stays on CPU
+    device = torch.device("cpu") 
     
-    # 2. Load and prepare model
+    # 2. Prepare Model
     model = prepare_model(m_cfg, d_cfg, device)
 
     # 3. Data Preparation
@@ -75,14 +72,20 @@ def run_quantization():
     
     quant_model = quantizer.quant_model
 
-    # 5. Fast Fine-Tuning (Optional)
-    # This must be run in 'calib' mode before the final forward pass
-    if args.quant_mode == 'calib' and args.fast_ft:
-        print("[INFO] Starting Fast Fine-Tuning (This may take several minutes)...")
-        # fast_finetune uses a subset of the calibration data to optimize weights
-        quantizer.fast_finetune(evaluate, (quant_model, loader, device))
+    # 5. Handle Fast Fine-Tuning Logic (The Official Flow)
+    if args.fast_ft:
+        if args.quant_mode == 'calib':
+            print("[INFO] Phase 1: Running Fast Fine-Tuning (AdaQuant)...")
+            # AdaQuant needs a loss function to optimize weight adjustments
+            loss_fn = torch.nn.CrossEntropyLoss()
+            quantizer.fast_finetune(evaluate, (quant_model, loader, loss_fn))
+        
+        elif args.quant_mode == 'test':
+            print("[INFO] Phase 2: Loading Fine-Tuned parameters...")
+            # CRITICAL: This loads the optimized weights before exporting the XMODEL
+            quantizer.load_ft_param()
 
-    # 6. Standard Forward Pass (Calibration)
+    # 6. Standard Forward Pass (Re-calibration)
     print(f"[INFO] Processing forward pass...")
     processed_count = 0
     with torch.no_grad():
@@ -103,10 +106,11 @@ def run_quantization():
     # 7. Export Final Results
     if args.quant_mode == 'calib':
         quantizer.export_quant_config()
-        print(f"[INFO] Calibration finished. Config saved to: {output_dir}")
+        print(f"[INFO] Calibration finished.")
     else:
+        # If fast_ft was used in calib, the XMODEL exported here will contain the optimized weights
         quantizer.export_xmodel(deploy_check=False, output_dir=output_dir)
-        print(f"[INFO] Export finished. XMODEL generated in: {output_dir}")
+        print(f"[INFO] Export finished. XMODEL is now optimized with Fast Fine-Tuning.")
 
 if __name__ == '__main__':
     run_quantization()
