@@ -16,7 +16,11 @@ DPU_ARCH_PATH = "/opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json"
 
 # Theoretical Peak Performance Calculation (GOP/s)
 # Formula: (4096 ops * 300 MHz * 2 operations per MAC) / 1000
+# Performance Limits
 DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000 
+
+# Benchmark configuration
+ACTIVE_THREADS = 4  # KV260 can do 4 threads at maximum 
 
 def get_power_mw():
     """
