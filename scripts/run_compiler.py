@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+import argparse
 
 # --- Path auto-fix to find configs in project root ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,4 +66,10 @@ def run_compiler():
         print(f"ERROR: Compilation failed!\n{e.stderr}")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, help='Model ID from model_config.py')
+    args = parser.parse_args()
+
+    # Pass the CLI argument to the config getter
+    m_cfg = get_active_model(args.model)
     run_compiler()

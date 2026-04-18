@@ -3,6 +3,7 @@ import sys
 import torch
 import torchvision.models as models
 from pytorch_nndct.apis import Inspector
+import argparse
 
 # --- Path auto-fix to find configs in project root ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -89,4 +90,12 @@ def run_model_inspector():
     print(f"=== Inspection Complete. Report saved to {output_dir} ===")
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, help='Model ID from model_config.py')
+    parser.add_argument('--dataset', type=str, help='Dataset ID from dataset_config.py')
+    args = parser.parse_args()
+
+    # Pass the CLI arguments to the config getters
+    m_cfg = get_active_model(args.model)
+    d_cfg = get_active_dataset(args.dataset)
     run_model_inspector()

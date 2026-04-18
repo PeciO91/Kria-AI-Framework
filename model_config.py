@@ -53,8 +53,12 @@ MODELS = {
     }
 }
 
-def get_active_model():
-    """Returns configuration for the active model."""
-    if ACTIVE_MODEL_ID not in MODELS:
-        raise ValueError(f"Model ID '{ACTIVE_MODEL_ID}' not found in configuration.")
-    return MODELS[ACTIVE_MODEL_ID]
+def get_active_model(model_id=None):
+    """Returns configuration for the model, allowing CLI override."""
+    # Use the provided model_id, otherwise fall back to the global ACTIVE_MODEL_ID
+    target_id = model_id if model_id else ACTIVE_MODEL_ID
+    
+    if target_id not in MODELS:
+        available = ", ".join(MODELS.keys())
+        raise ValueError(f"Model ID '{target_id}' not found. Available: {available}")
+    return MODELS[target_id]

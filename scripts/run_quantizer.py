@@ -18,6 +18,8 @@ from dataset_config import get_active_dataset
 
 # 1. Argument Parser for switching modes
 parser = argparse.ArgumentParser()
+parser.add_argument('--model', type=str, help='Model ID from model_config.py')
+parser.add_argument('--dataset', type=str, help='Dataset ID from dataset_config.py')
 parser.add_argument('--quant_mode', default='calib', choices=['calib', 'test'], 
                     help='Quantization mode: calib (calibration) or test (evaluation/export)')
 parser.add_argument('--subset_len', default=100, type=int, 
@@ -28,8 +30,8 @@ args = parser.parse_args()
 
 def run_quantization():
     # Load modular configurations
-    m_cfg = get_active_model()
-    d_cfg = get_active_dataset()
+    m_cfg = get_active_model(args.model)
+    d_cfg = get_active_dataset(args.dataset)
     
     # ---------------------------------------------------------
     # AUTOMATIC SUBSET OPTIMIZATION

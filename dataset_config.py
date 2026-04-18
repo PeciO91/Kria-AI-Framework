@@ -26,8 +26,11 @@ DATASETS = {
     }
 }
 
-def get_active_dataset():
-    """Returns the configuration of the currently active dataset."""
-    if ACTIVE_DATASET_ID not in DATASETS:
-        raise ValueError(f"Dataset ID '{ACTIVE_DATASET_ID}' not found.")
-    return DATASETS[ACTIVE_DATASET_ID]
+def get_active_dataset(dataset_id=None):
+    """Returns configuration for the dataset, allowing CLI override."""
+    target_id = dataset_id if dataset_id else ACTIVE_DATASET_ID
+    
+    if target_id not in DATASETS:
+        available = ", ".join(DATASETS.keys())
+        raise ValueError(f"Dataset ID '{target_id}' not found. Available: {available}")
+    return DATASETS[target_id]
