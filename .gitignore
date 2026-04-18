@@ -10,6 +10,7 @@ models/*.h5
 models/*.prototxt
 models/*.caffemodel
 models/*.pt
+models/*.py
 
 # Vitis AI výstupy
 build/
