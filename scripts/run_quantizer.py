@@ -58,7 +58,15 @@ def run_quantization():
             model_fn = getattr(torchvision.models, m_cfg['model_class'])
             model = model_fn()
             num_classes = len(d_cfg['classes'])
-            model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+            last_layer_name = m_cfg.get('last_layer_name', 'fc')
+            
+            last_layer = getattr(model, last_layer_name)
+            if isinstance(last_layer, torch.nn.Sequential):
+                in_features = last_layer[-1].in_features
+            else:
+                in_features = last_layer.in_features
+                
+            setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
             model.load_state_dict(checkpoint)
             
         model.eval()

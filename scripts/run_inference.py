@@ -1,3 +1,5 @@
+# --- START OF FILE run_inference.py ---
+
 import numpy as np
 import cv2
 import vart
@@ -5,6 +7,7 @@ import xir
 import os
 import time
 import threading
+import queue
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset
@@ -19,6 +22,7 @@ class PowerMonitor(threading.Thread):
         self.interval = interval
         self.samples = []
         self.stop_evt = threading.Event()
+        self.daemon = True # Ensures thread dies if main script crashes
         
     def run(self):
         while not self.stop_evt.is_set():
@@ -27,52 +31,89 @@ class PowerMonitor(threading.Thread):
             time.sleep(self.interval)
 
 # =============================================================
-# THREAD WORKER FUNCTION
+# PRODUCER: CPU Preprocessing (OPTIMIZED MATH)
 # =============================================================
-def worker(thread_id, image_chunk, dpu_subgraph, results, norm_mean, norm_std):
-    """Each thread creates its own runner and processes its chunk of data."""
-    runner = vart.Runner.create_runner(dpu_subgraph, "run")
+def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fix_pos):
+    """Reads, resizes, normalizes (with optimized math), and pushes to queue."""
+    dpu_height, dpu_width = dpu_shape[1], dpu_shape[2]
     
-    input_tensors = runner.get_input_tensors()
-    output_tensors = runner.get_output_tensors()
-    input_ndim = tuple(input_tensors[0].dims) # Expected NHWC (Batch, Height, Width, Channels)
-    output_ndim = tuple(output_tensors[0].dims)
-    fix_pos = input_tensors[0].get_attr("fix_point")
-
-    local_correct = 0
-    local_total = 0
-    local_dpu_time = 0
-
-    # Prepare buffers for this specific thread
-    input_data = [np.empty(input_ndim, dtype=np.int8)]
-    output_data = [np.empty(output_ndim, dtype=np.int8)]
+    # ---------------------------------------------------------
+    # PRE-CALCULATE CONSTANTS ONCE PER THREAD
+    # ---------------------------------------------------------
+    mean_np = np.array(norm_mean, dtype=np.float32)
+    std_np = np.array(norm_std, dtype=np.float32)
+    f_scale = np.float32(2 ** fix_pos)
+    
+    # Algebraically simplified normalization and quantization
+    # scale = (2^fix_pos) / (255.0 * std)
+    # shift = (mean * 2^fix_pos) / std
+    math_scale = np.float32(f_scale / (255.0 * std_np))
+    math_shift = np.float32((mean_np * f_scale) / std_np)
+    # ---------------------------------------------------------
 
     for img_path, class_idx in image_chunk:
-        # 1. Preprocess (CPU)
         img = cv2.imread(img_path)
         if img is None: continue
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
-        # Override any config - strictly follow what DPU hardware demands
-        dpu_width = input_ndim[2]
-        dpu_height = input_ndim[1]
+        # You can also add interpolation=cv2.INTER_NEAREST here later if you want even more speed
         img = cv2.resize(img, (dpu_width, dpu_height))
         
-        # Normalization
-        img = (img.astype(np.float32) / 255.0 - norm_mean) / norm_std
-        input_data[0][0,...] = (img * (2**fix_pos)).astype(np.int8)
+        # ---------------------------------------------------------
+        # OPTIMIZED PIXEL MATH (Vectorized via NumPy broadcasting)
+        # ---------------------------------------------------------
+        # 1. Cast to float32
+        # 2. Multiply by pre-calculated scale
+        # 3. Subtract pre-calculated shift
+        # 4. Cast directly to int8
+        img_int8 = (img.astype(np.float32) * math_scale - math_shift).astype(np.int8)
+        
+        # Wrap in expected DPU shape: (1, H, W, C)
+        img_int8 = np.expand_dims(img_int8, axis=0)
+        
+        # Push to queue
+        input_queue.put((img_int8, class_idx))
 
-        # 2. Inference (DPU)
+# =============================================================
+# CONSUMER: DPU Inference
+# =============================================================
+def consumer_worker(thread_id, input_queue, dpu_subgraph, results):
+    """Pulls preprocessed arrays from the queue and feeds the DPU."""
+    runner = vart.Runner.create_runner(dpu_subgraph, "run")
+    output_tensors = runner.get_output_tensors()
+    output_ndim = tuple(output_tensors[0].dims)
+    
+    local_correct = 0
+    local_total = 0
+    local_dpu_time = 0
+
+    # Pre-allocate output buffer for this thread
+    output_data = [np.empty(output_ndim, dtype=np.int8)]
+
+    while True:
+        # Pull from queue
+        item = input_queue.get()
+        
+        # Check for the kill signal (None)
+        if item is None:
+            input_queue.task_done()
+            break
+            
+        img_int8, class_idx = item
+        input_data = [img_int8]
+
+        # Execute on DPU
         t_start = time.perf_counter()
         jid = runner.execute_async(input_data, output_data)
         runner.wait(jid)
         local_dpu_time += (time.perf_counter() - t_start)
 
-        # 3. Postprocess (CPU) - Classification
-        # We explicitly cast class_idx to int to prevent string vs int comparison bugs
+        # Postprocess (Argmax is fast enough to do here)
         if np.argmax(output_data[0][0]) == int(class_idx):
             local_correct += 1
         local_total += 1
+        
+        input_queue.task_done()
 
     results[thread_id] = (local_correct, local_total, local_dpu_time)
     del runner  # Clean up VART memory
@@ -81,34 +122,34 @@ def worker(thread_id, image_chunk, dpu_subgraph, results, norm_mean, norm_std):
 # MAIN LOGIC
 # =============================================================
 def run_inference():
-    # Load configurations
     m_cfg = get_active_model()
     d_cfg = get_active_dataset()
     
-    # Expected model path in the same directory
     model_name = m_cfg['name'].lower()
     model_path = f"{model_name}_kria.xmodel"
-    
-    # Standardized dataset path: datasets/<folder_name>/train_data
     dataset_path = os.path.join("datasets", d_cfg['folder_name'], "train_data")
     
-    print(f"Preparing data and DPU for model: {m_cfg['name']} (Threads: {ACTIVE_THREADS})...")
-    print(f"Target dataset path: {dataset_path}")
+    print(f"Preparing Producer-Consumer pipeline for: {m_cfg['name']}")
     
     try:
         graph = xir.Graph.deserialize(model_path)
     except Exception as e:
-        print(f"Error: Model {model_path} not found. Did you copy it to the Kria board?")
+        print(f"Error: Model {model_path} not found.")
         return
 
     subgraph = [s for s in graph.get_root_subgraph().get_children() 
                 if s.get_attr("device").upper() == "DPU"][0]
 
-    # Gather all image paths and their respective labels
+    # Extract DPU requirements to pass to Producers
+    dummy_runner = vart.Runner.create_runner(subgraph, "run")
+    input_tensors = dummy_runner.get_input_tensors()
+    dpu_shape = tuple(input_tensors[0].dims)
+    fix_pos = input_tensors[0].get_attr("fix_point")
+    del dummy_runner
+
+    # Gather images
     all_images = []
-    classes = d_cfg['classes']
-    
-    for c_idx, c_name in enumerate(classes):
+    for c_idx, c_name in enumerate(d_cfg['classes']):
         c_dir = os.path.join(dataset_path, c_name)
         if not os.path.isdir(c_dir): continue
         for f in os.listdir(c_dir):
@@ -116,40 +157,63 @@ def run_inference():
                 all_images.append((os.path.join(c_dir, f), c_idx))
 
     if not all_images:
-        print(f"Error: No images found in {dataset_path} directory.")
+        print(f"Error: No images found in {dataset_path}")
         return
-
-    # Split data equally among threads using pure Python to preserve data types (int stays int)
-    chunk_size = (len(all_images) + ACTIVE_THREADS - 1) // ACTIVE_THREADS
-    chunks = [all_images[i:i + chunk_size] for i in range(0, len(all_images), chunk_size)]
 
     print("Measuring idle power consumption...")
     idle_p = np.mean([get_power_mw() / 1000.0 for _ in range(5)])
 
-    print("Starting benchmark...")
+    # --- PIPELINE SETUP ---
+    # Maxsize prevents the CPU from eating all RAM if it's faster than the DPU
+    img_queue = queue.Queue(maxsize=50) 
+    
+    NUM_PRODUCERS = 4  # 4 CPU threads dedicated to OpenCV/Numpy
+    NUM_CONSUMERS = ACTIVE_THREADS # 4 DPU threads
+    
+    results = [None] * NUM_CONSUMERS
+    producer_threads = []
+    consumer_threads = []
+
+    # Split data for producers
+    chunk_size = (len(all_images) + NUM_PRODUCERS - 1) // NUM_PRODUCERS
+    chunks = [all_images[i:i + chunk_size] for i in range(0, len(all_images), chunk_size)]
+
+    print(f"Starting benchmark... ({NUM_PRODUCERS} Producers, {NUM_CONSUMERS} Consumers)")
     monitor = PowerMonitor()
     monitor.start()
-
+    
     start_wall = time.time()
-    threads = []
-    results = [None] * ACTIVE_THREADS
 
-    for i in range(ACTIVE_THREADS):
-        # We pass only the chunk to the worker, it pulls DPU dims from the model itself
-        t = threading.Thread(target=worker, args=(
-            i, chunks[i], subgraph, results, 
-            d_cfg['normalization']['mean'], d_cfg['normalization']['std']
-        ))
-        threads.append(t)
+    # 1. Start Consumers (They will block, waiting for data in the queue)
+    for i in range(NUM_CONSUMERS):
+        t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, results))
         t.start()
+        consumer_threads.append(t)
 
-    for t in threads:
+    # 2. Start Producers (They will start filling the queue)
+    for i in range(NUM_PRODUCERS):
+        t = threading.Thread(target=producer_worker, args=(
+            chunks[i], img_queue, dpu_shape, 
+            d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos
+        ))
+        t.start()
+        producer_threads.append(t)
+
+    # 3. Wait for all Producers to finish processing images
+    for t in producer_threads:
+        t.join()
+
+    # 4. Send "Kill Signals" to Consumers (one for each consumer)
+    for _ in range(NUM_CONSUMERS):
+        img_queue.put(None)
+
+    # 5. Wait for Consumers to finish their final inferences
+    for t in consumer_threads:
         t.join()
 
     end_wall = time.time()
     monitor.stop_evt.set()
-    monitor.join()
-
+    
     # =============================================================
     # AGGREGATION AND REPORT CALCULATION
     # =============================================================
@@ -165,14 +229,12 @@ def run_inference():
     avg_load_pwr = np.mean(monitor.samples) if monitor.samples else idle_p
     energy_per_frame = (avg_load_pwr / fps_app) * 1000
 
-    # DPU Efficiency Metrics
     duty_cycle = (total_dpu_busy_time / (total_wall_time * ACTIVE_THREADS)) * 100
     compute_eff = (fps_app * m_cfg['gops'] / DPU_PEAK_GOPS) * 100
 
-    # Build the report string
     report_text = f"""
 {"="*60}
-  ANALYTICAL REPORT: {m_cfg['name'].upper()} | THREADS: {ACTIVE_THREADS}
+  ANALYTICAL REPORT: {m_cfg['name'].upper()} | DPU THREADS: {ACTIVE_THREADS}
 {"="*60}
 Date and Time:      {time.strftime("%Y-%m-%d %H:%M:%S")}
 Model Path:         {model_path}
@@ -194,12 +256,10 @@ DPU Compute Eff.:   {compute_eff:.2f} %  (MAC utilization during compute)
 
     print(report_text)
 
-    # Write results to file
     filename = f"results_{model_name}_t{ACTIVE_THREADS}.txt"
     try:
         with open(filename, "w", encoding="utf-8") as f:
             f.write(report_text)
-        print(f"Report successfully saved to file: {filename}")
     except Exception as e:
         print(f"Error writing to file: {e}")
 

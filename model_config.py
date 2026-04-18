@@ -1,5 +1,5 @@
 # Global selector for the active model
-ACTIVE_MODEL_ID = "mobilenet_v2"
+ACTIVE_MODEL_ID = "resnet18"
 
 MODELS = {
     "resnet18": {
