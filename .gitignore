@@ -28,3 +28,4 @@ vaitrace_resources/
 .idea/
 
 quantize_result/
+results_*.txt

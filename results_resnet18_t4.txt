@@ -1,0 +1,20 @@
+
+============================================================
+  ANALYTICAL REPORT: RESNET18 | THREADS: 4
+============================================================
+Date and Time:      2026-04-18 02:03:05
+Model Path:         resnet18_kria.xmodel
+Dataset:            3000 images
+Overall Accuracy:   89.00 %
+------------------------------------------------------------
+Application FPS:    238.16 img/s (System total)
+Theoretical DPU FPS:171.76 img/s (Compute only)
+DPU Latency (avg):  5.82 ms
+------------------------------------------------------------
+Power (Idle):       5.22 W
+Power (Load):       8.30 W
+Energy per frame:   34.85 mJ/img
+------------------------------------------------------------
+DPU Duty Cycle:     34.66 %  (Time utilization of cores)
+DPU Compute Eff.:   35.27 %  (MAC utilization during compute)
+============================================================

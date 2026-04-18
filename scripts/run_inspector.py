@@ -39,7 +39,24 @@ def run_model_inspector():
 
     # Adjust final layer to match dataset classes
     num_classes = len(d_cfg['classes'])
-    model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+    last_layer_name = m_cfg.get('last_layer_name', 'fc')
+    
+    try:
+        # Dynamické načtení poslední vrstvy (např. 'fc' nebo 'classifier')
+        last_layer = getattr(model, last_layer_name)
+        
+        # Zjištění in_features (MobileNet má Sequential blok, ResNet má přímo Linear)
+        if isinstance(last_layer, torch.nn.Sequential):
+            in_features = last_layer[-1].in_features
+        else:
+            in_features = last_layer.in_features
+            
+        # Dynamické nahrazení vrstvy novou hlavičkou pro náš počet tříd
+        setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
+        
+    except AttributeError:
+        print(f"Chyba: Model nemá vrstvu s názvem '{last_layer_name}'. Zkontroluj model_config.py.")
+        exit(1)
 
     # 4. Load weights
     try:
