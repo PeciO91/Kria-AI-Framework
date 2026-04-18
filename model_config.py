@@ -3,6 +3,7 @@ ACTIVE_MODEL_ID = "resnet18"
 
 MODELS = {
     "resnet18": {
+        "source": "torchvision",
         "type": "classification",
         "name": "ResNet18",
         "model_path": "models/resnet18.pt", # Path to your PyTorch weights
@@ -35,13 +36,16 @@ MODELS = {
         "model_path": "models/mobilenet_v3.pt",
         "gops": 0.44
     },
-    "mobilenet_v4": {
+    "mobilenet_v4_hybrid": {
+        "source": "custom",
+        "file_path": "models/mobilenet_v4_hybrid.py",
         "type": "classification",
-        "name": "MobileNetV4-Medium",
-        "model_class": "mobilenet_v4",
-        "input_shape": (224, 224),
-        "model_path": "models/mobilenet_v4.pt",
-        "gops": 0.92
+        "name": "MobileNetV4_Hybrid",
+        "model_class": "MobileNetV4HybridLarge",
+        "last_layer_name": "head", # We will target the 'head' Sequential block
+        "input_shape": (384, 384), # CRITICAL: Must be 384
+        "model_path": "models/mobilenet_v4.pt", # Your weights from Colab
+        "gops": 3.8 # Approximate for the Large version
     },
     "inception_v3": {
         "type": "classification",
