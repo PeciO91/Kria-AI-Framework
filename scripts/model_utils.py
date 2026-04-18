@@ -49,25 +49,30 @@ def prepare_model(m_cfg, d_cfg, device):
     try:
         last_layer = getattr(model, last_layer_name)
         if isinstance(last_layer, torch.nn.Sequential):
+            # Replace ONLY the last module in the sequence
             in_features = last_layer[-1].in_features
+            last_layer[-1] = torch.nn.Linear(in_features, num_classes)
         else:
+            # Replace the layer normally
             in_features = last_layer.in_features
-            
-        setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
+            setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
     except AttributeError:
-        raise AttributeError(f"Model does not have a layer named '{last_layer_name}'. "
-                             f"Check model_config.py.")
+        raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
 
     # 3. Load Weights
-    if not os.path.exists(m_cfg['model_path']):
-        raise FileNotFoundError(f"Weight file not found: {m_cfg['model_path']}")
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(current_dir, '..')) # Adjust '..' if utils is in a subfolder
+    abs_weight_path = os.path.join(project_root, m_cfg['model_path'])
+
+    if not os.path.exists(abs_weight_path):
+        raise FileNotFoundError(f"Weight file not found: {abs_weight_path}")
         
-    checkpoint = torch.load(m_cfg['model_path'], map_location=device)
-    
+    checkpoint = torch.load(abs_weight_path, map_location=device)
+
     if isinstance(checkpoint, torch.nn.Module):
         model = checkpoint
     else:
-        # Most common: state_dict
+        # Standard state_dict loading
         model.load_state_dict(checkpoint)
         
     model.to(device)
