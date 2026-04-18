@@ -59,7 +59,7 @@ def run_model_inspector():
     inspector = Inspector(DPU_FINGERPRINT)
 
     # 6. Run Inspection
-    input_h, input_w = d_cfg['input_shape']
+    input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn(1, 3, input_h, input_w)
     
     print(f"Inspecting with input shape: {dummy_input.shape}...")

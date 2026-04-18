@@ -72,7 +72,7 @@ def run_quantization():
     
     # Preprocessing pipeline driven by dataset_config
     transform = transforms.Compose([
-        transforms.Resize(d_cfg['input_shape']),
+        transforms.Resize(m_cfg['input_shape']),
         transforms.ToTensor(),
         transforms.Normalize(d_cfg['normalization']['mean'], 
                              d_cfg['normalization']['std'])
@@ -89,7 +89,7 @@ def run_quantization():
 
     # 4. Initialize Quantizer
     # Use input shape from dataset configuration
-    input_h, input_w = d_cfg['input_shape']
+    input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn([1, 3, input_h, input_w])
     
     quantizer = pytorch_nndct.apis.torch_quantizer(
