@@ -54,6 +54,28 @@ MODELS = {
         "input_shape": (299, 299), # Note: Inception requires 299x299
         "model_path": "models/inception_v3.pt",
         "gops": 5.71
+    },
+    "yolov5s": {
+        "source": "custom",
+        "file_path": "models/yolov5s.py",      # You will need to provide this model file
+        "type": "detection",
+        "name": "YOLOv5-Small",
+        "model_class": "YOLOv5",               # The main class inside yolov5s.py
+        "input_shape": (640, 640),             # YOLO standard resolution
+        "model_path": "models/yolov5s.pt",
+        "gops": 15.8,
+        "conf_threshold": 0.25,                # Minimum score to keep a bounding box
+        "iou_threshold": 0.45                  # Overlap threshold for NMS
+    },
+    "unet_res18": {
+        "source": "custom",
+        "file_path": "models/unet.py",         # You will need to provide this model file
+        "type": "segmentation",
+        "name": "UNet_ResNet18",
+        "model_class": "UNet",                 # The main class inside unet.py
+        "input_shape": (512, 512),             # Typical segmentation resolution
+        "model_path": "models/unet.pt",
+        "gops": 25.0
     }
 }
 

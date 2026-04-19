@@ -45,46 +45,44 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     """
     Consolidated loader: 
     1. Loads skeleton 
-    2. Adapts last layer (Sequential-aware)
+    2. Adapts last layer (ONLY for classification)
     3. Handles Pruning (Slimming architecture via provided threshold)
     4. Loads weights via absolute paths
     """
     # 0. Setup Absolute Paths relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    # Assuming scripts/ is inside the project root
     project_root = os.path.abspath(os.path.join(script_dir, '..'))
     
     # 1. Load Architecture
     model = load_model_skeleton(m_cfg)
     
-    # 2. Dynamic Layer Replacement (Sequential-aware)
-    num_classes = len(d_cfg['classes'])
-    last_layer_name = m_cfg.get('last_layer_name', 'fc')
-    
-    try:
-        last_layer = getattr(model, last_layer_name)
-        if isinstance(last_layer, torch.nn.Sequential):
-            # Replace ONLY the last module in the sequence to preserve Dropout/Flatten
-            in_features = last_layer[-1].in_features
-            last_layer[-1] = torch.nn.Linear(in_features, num_classes)
-        else:
-            # Standard replacement for single layers
-            in_features = last_layer.in_features
-            setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
-    except AttributeError:
-        raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
+    # 2. Dynamic Layer Replacement
+    # Only do this if the model is a classification model!
+    if m_cfg.get('type') == 'classification':
+        num_classes = len(d_cfg['classes'])
+        last_layer_name = m_cfg.get('last_layer_name', 'fc')
+        
+        try:
+            last_layer = getattr(model, last_layer_name)
+            if isinstance(last_layer, torch.nn.Sequential):
+                in_features = last_layer[-1].in_features
+                last_layer[-1] = torch.nn.Linear(in_features, num_classes)
+            else:
+                in_features = last_layer.in_features
+                setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
+        except AttributeError:
+            raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
+    else:
+        print(f"[INFO] {m_cfg.get('type').capitalize()} model detected. Skipping Linear layer replacement.")
 
     # 3. Handle Pruning (Optimizer logic)
-    # Check if a pruned file exists
     target_weight_path = m_cfg['model_path']
     pruned_weight_path = target_weight_path.replace(".pt", "_pruned.pt")
     abs_pruned_path = os.path.join(project_root, pruned_weight_path)
 
-    # Use pruned weights if they exist AND a threshold is provided
     if os.path.exists(abs_pruned_path) and prune_threshold is not None:
         if not HAS_PRUNER:
-            print("[WARN] Pruned weights detected but Pruner (NNDCT) not available. " 
-                  "Is this the Kria board? Pruned models require NNDCT to load.")
+            print("[WARN] Pruned weights detected but Pruner (NNDCT) not available.")
         else:
             print(f"[INFO] Pruned weights detected. Slimming architecture (Ratio: {prune_threshold})")
             input_h, input_w = m_cfg['input_shape']
@@ -104,8 +102,8 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     if isinstance(checkpoint, torch.nn.Module):
         model = checkpoint
     else:
-        # Standard state_dict loading
-        model.load_state_dict(checkpoint)
+        # strict=False is safer for YOLO models which often have slight key mismatches in the Detect head
+        model.load_state_dict(checkpoint, strict=False)
         
     model.to(device)
     model.eval()

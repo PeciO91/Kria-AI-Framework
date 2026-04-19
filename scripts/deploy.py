@@ -87,6 +87,8 @@ def main():
         files_to_send = [
             local_model,
             get_script_path("run_inference.py"),
+            get_script_path("run_detection.py"),
+            get_script_path("run_segmentation.py"),
             get_script_path("model_config.py"),
             get_script_path("dataset_config.py"),
             get_script_path("board_config.py")

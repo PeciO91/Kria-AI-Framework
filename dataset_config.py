@@ -23,8 +23,29 @@ DATASETS = {
             "mean": [0.485, 0.456, 0.406],
             "std": [0.229, 0.224, 0.225]
         }
+    },
+    "coco_detection": {
+        "name": "COCO Detection Calibration",
+        "folder_name": "coco", 
+        # Point this to a folder containing ~200 images from your detection dataset
+        "calib_path": "data/coco/calibration_data", 
+        "normalization": {
+            "mean": [0.0, 0.0, 0.0],  # YOLO often uses 0-1 scaling (mean 0, std 1)
+            "std": [1.0, 1.0, 1.0]    # check your specific YOLO training config!
+        }
+    },
+    "cityscapes_seg": {
+        "name": "Cityscapes Segmentation Calibration",
+        "folder_name": "cityscapes",
+        # Point this to a folder containing ~200 images from your segmentation dataset
+        "calib_path": "data/cityscapes/calibration_data",
+        "normalization": {
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225]
+        }
     }
 }
+
 
 def get_active_dataset(dataset_id=None):
     """Returns configuration for the dataset, allowing CLI override."""

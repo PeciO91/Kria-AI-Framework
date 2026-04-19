@@ -4,6 +4,8 @@ import argparse
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
+from torch.utils.data import Dataset
+from PIL import Image 
 import pytorch_nndct
 
 # --- Path auto-fix ---
@@ -26,6 +28,24 @@ parser.add_argument('--fast_ft', action='store_true', help='Enable Fast Fine-Tun
 # LOOPHOLE FIX: Added threshold argument
 parser.add_argument('--prune_threshold', type=float, help='Threshold used for pruning')
 args = parser.parse_args()
+
+class SimpleImageDataset(Dataset):
+    """A generic dataset that loads images from a flat folder for calibration."""
+    def __init__(self, root_dir, transform=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.image_files = [f for f in os.listdir(root_dir) 
+                           if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        img_name = os.path.join(self.root_dir, self.image_files[idx])
+        image = Image.open(img_name).convert('RGB')
+        if self.transform:
+            image = self.transform(image)
+        return image, 0  # Return dummy label 0, quantizer ignores it anyway
 
 def evaluate(model, loader, loss_fn):
     model.eval()
@@ -64,14 +84,21 @@ def run_quantization():
         transforms.Normalize(d_cfg['normalization']['mean'], d_cfg['normalization']['std'])
     ])
     
-    # Verify dataset structure for ImageFolder (needs sub-folders)
-    subdirs = [d for d in os.listdir(d_cfg['calib_path']) if os.path.isdir(os.path.join(d_cfg['calib_path'], d))]
-    if not subdirs:
-        raise RuntimeError(f"Quantization Error: {d_cfg['calib_path']} must contain at least one subdirectory (e.g. 'data/calib/images/1.jpg') for ImageFolder to work.")
+    # Choose dataset loader based on task type
+    if m_cfg.get('type') == 'classification':
+        # Verify dataset structure for ImageFolder (needs sub-folders)
+        subdirs = [d for d in os.listdir(d_cfg['calib_path']) if os.path.isdir(os.path.join(d_cfg['calib_path'], d))]
+        if not subdirs:
+            raise RuntimeError(f"Quantization Error: {d_cfg['calib_path']} must contain at least one subdirectory (e.g. 'data/calib/images/1.jpg') for ImageFolder to work.")
+        dataset = ImageFolder(root=d_cfg['calib_path'], transform=transform)
+    else:
+        # Detection and Segmentation just use flat folders
+        print(f"[INFO] Using flat-folder image loader for {m_cfg.get('type')} task.")
+        dataset = SimpleImageDataset(root_dir=d_cfg['calib_path'], transform=transform)
+        if len(dataset) == 0:
+            raise RuntimeError(f"Quantization Error: No images found in {d_cfg['calib_path']}.")
 
-    dataset = ImageFolder(root=d_cfg['calib_path'], transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False)
-
     input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn([1, 3, input_h, input_w]).to(device)
     
