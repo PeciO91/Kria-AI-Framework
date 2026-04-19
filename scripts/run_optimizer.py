@@ -71,23 +71,19 @@ def run_optimizer():
         pass
 
     elif args.mode == 'prune':
-        print(f"=== Starting Pruning Flow: {m_cfg['name']} ===")
-        print(f"[INFO] Target Ratio: {args.ratio}")
-        
-        # This command modifies the 'model' object to be the slim version
+        print(f"=== Starting Pruning: {m_cfg['name']} ===")
         model = pruner.prune(threshold=args.ratio)
         
-        # 3. Fine-tuning (Mandatory to recover accuracy)
-        print(f"[INFO] Fine-tuning for {args.epochs} epochs to recover accuracy...")
-        # Note: You need a proper training loader from ImageFolder here
-        # optimizer = optim.Adam(model.parameters(), lr=1e-4)
-        # criterion = nn.CrossEntropyLoss()
-        # for epoch in range(args.epochs):
-        #     train_one_epoch(model, train_loader, optimizer, criterion, device)
+        # CRITICAL: We must notify the user that this model is "empty" until trained
+        print(f"[WARNING] Model is now structurally pruned but weights are untrained.")
+        print(f"[INFO] You MUST uncomment the fine-tuning loop in run_optimizer.py to recover accuracy.")
         
-        # 4. Save the Pruned Weights
-        torch.save(model.state_dict(), pruned_weight_path)
-        print(f"[SUCCESS] Pruned model saved to: {pruned_weight_path}")
+        # Use the absolute path logic to ensure it saves in the correct 'models/' folder
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        save_path = os.path.join(project_root, pruned_weight_path)
+        
+        torch.save(model.state_dict(), save_path)
+        print(f"[SUCCESS] Pruned skeleton saved to: {save_path}")
 
 if __name__ == '__main__':
     run_optimizer()

@@ -78,31 +78,37 @@ def main():
 
 # --- 6. AUTOMATED TRANSFER ---
     if args.ip:
-        local_file = os.path.join(PROJECT_ROOT, "build", folder_name, "compiled", f"{folder_name}_kria.xmodel")
+        local_model = os.path.join(PROJECT_ROOT, "build", folder_name, "compiled", f"{folder_name}_kria.xmodel")
         remote_dest = f"{args.user}@{args.ip}:/home/{args.user}/"
         
-        print(f"\n{'='*70}\n >> STAGE: Transfer to Kria (Zero-Prompt Mode)\n{'='*70}")
-        if not os.path.exists(local_file):
-            print(f"[ERROR] Compiled file not found at: {local_file}")
-        else:
-            print(f"[INFO] Sending {local_file} to {remote_dest}...")
-            
-            # -o StrictHostKeyChecking=no: Skips the "yes/no" fingerprint prompt
-            # -o UserKnownHostsFile=/dev/null: Prevents saving keys to a file (cleaner for Docker)
-            transfer_cmd = [
-                "scp", 
-                "-o", "StrictHostKeyChecking=no", 
-                "-o", "UserKnownHostsFile=/dev/null", 
-                local_file, 
-                remote_dest
-            ]
-            
-            try:
-                subprocess.run(transfer_cmd, check=True)
-                print(f"\n[SUCCESS] Model successfully transferred to {args.ip}")
-            except subprocess.CalledProcessError:
-                print(f"\n[ERROR] Transfer failed.")
-                print(f"[TIP] Did you run 'ssh-copy-id {args.user}@{args.ip}' inside this Docker?")
+        print(f"\n{'='*70}\n >> STAGE: Transfer to Kria (Full Package)\n{'='*70}")
+        
+        # List of essential files to run inference on the board
+        files_to_send = [
+            local_model,
+            get_script_path("run_inference.py"),
+            get_script_path("model_config.py"),
+            get_script_path("dataset_config.py"),
+            get_script_path("board_config.py")
+        ]
+
+        # Filter out missing files to avoid SCP errors
+        existing_files = [f for f in files_to_send if os.path.exists(f)]
+        
+        # -o BatchMode=yes: Fails immediately if password is required (prevents hanging)
+        transfer_cmd = [
+            "scp", 
+            "-o", "StrictHostKeyChecking=no", 
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "BatchMode=yes" 
+        ] + existing_files + [remote_dest]
+        
+        try:
+            subprocess.run(transfer_cmd, check=True)
+            print(f"\n[SUCCESS] Model and scripts transferred to {args.ip}")
+            print(f"[TIP] To run: ssh {args.user}@{args.ip} 'python3 run_inference.py --model {args.model}'")
+        except subprocess.CalledProcessError:
+            print(f"\n[ERROR] Transfer failed. Verify SSH keys or IP address.")
 
     total_elapsed = time.time() - pipeline_start
     print(f"\n{'#'*70}\n  PIPELINE COMPLETE in {total_elapsed/60:.2f}m\n{'#'*70}")

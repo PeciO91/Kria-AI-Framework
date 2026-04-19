@@ -20,12 +20,14 @@ def run_compiler(model_id):
     # 2. Define input/output paths
     quant_dir = os.path.join("build", model_name, "quantize_result")
     
-    quant_model = None
-    if os.path.exists(quant_dir):
-        for f in os.listdir(quant_dir):
-            if f.endswith(".xmodel") and not f.startswith("deploy"):
-                quant_model = os.path.join(quant_dir, f)
-                break
+    # Vitis AI PyTorch quantizer always names the output this way:
+    expected_quant_name = f"{m_cfg['model_class']}_int.xmodel"
+    quant_model = os.path.join(quant_dir, expected_quant_name)
+            
+    if not os.path.exists(quant_model):
+        print(f"Error: Quantized model NOT found at {quant_model}")
+        print(f"Check if Quantization Phase 2 (test mode) finished correctly.")
+        return
             
     if not quant_model:
         print(f"Error: No quantized xmodel found in {quant_dir}.")

@@ -64,6 +64,11 @@ def run_quantization():
         transforms.Normalize(d_cfg['normalization']['mean'], d_cfg['normalization']['std'])
     ])
     
+    # Verify dataset structure for ImageFolder (needs sub-folders)
+    subdirs = [d for d in os.listdir(d_cfg['calib_path']) if os.path.isdir(os.path.join(d_cfg['calib_path'], d))]
+    if not subdirs:
+        raise RuntimeError(f"Quantization Error: {d_cfg['calib_path']} must contain at least one subdirectory (e.g. 'data/calib/images/1.jpg') for ImageFolder to work.")
+
     dataset = ImageFolder(root=d_cfg['calib_path'], transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False)
 

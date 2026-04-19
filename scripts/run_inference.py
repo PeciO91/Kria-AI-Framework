@@ -162,54 +162,52 @@ def run_inference(model_id, dataset_id, thread_override):
 
     monitor = PowerMonitor()
     monitor.start()
-    idle_p = np.mean([get_power_mw() / 1000.0 for _ in range(5)])
-    
-    start_wall = time.time()
+    try:
+        idle_p = np.mean([get_power_mw() / 1000.0 for _ in range(5)])
+        
+        start_wall = time.time()
 
-    # Launch threads
-    c_threads = []
-    for i in range(num_consumers):
-        t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, results))
-        t.start()
-        c_threads.append(t)
+        # Launch threads
+        c_threads = []
+        for i in range(num_consumers):
+            t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, results))
+            t.start()
+            c_threads.append(t)
 
-    p_threads = []
-    for i in range(num_producers):
-        t = threading.Thread(target=producer_worker, args=(
-            chunks[i], img_queue, dpu_shape, 
-            d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos
-        ))
-        t.start()
-        p_threads.append(t)
+        p_threads = []
+        for i in range(num_producers):
+            t = threading.Thread(target=producer_worker, args=(
+                chunks[i], img_queue, dpu_shape, 
+                d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos
+            ))
+            t.start()
+            p_threads.append(t)
 
-    # --- PHASE 1: Wait for Producers to finish ---
-    for t in p_threads:
-        while t.is_alive():
+    # --- PHASE 1: Wait for Producers to fill the queue ---
+        for t in p_threads:
+            t.join() 
+
+        # --- PHASE 2: Send stop signals (Now that all images are in queue) ---
+        for _ in range(num_consumers):
+            img_queue.put(None)
+
+        # --- PHASE 3: Wait for Consumers and show progress ---
+        print(f"[INFO] DPU Processing started...")
+        while any(t.is_alive() for t in c_threads):
             with progress_lock:
                 curr = progress_cnt
             percent = (curr / total_imgs) * 100
             sys.stdout.write(f"\r[INFO] Progress: {curr}/{total_imgs} ({percent:.1f}%) ")
             sys.stdout.flush()
-            t.join(0.1)
+            time.sleep(0.5) # Update every half second
 
-    # --- PHASE 2: Send stop signals (NOW REACHABLE) ---
-    for _ in range(num_consumers):
-        img_queue.put(None)
+        sys.stdout.write(f"\r[INFO] Progress: {total_imgs}/{total_imgs} (100.0%) Done!\n")
 
-    # --- PHASE 3: Wait for Consumers to finish remaining tasks ---
-    for t in c_threads:
-        while t.is_alive():
-            with progress_lock:
-                curr = progress_cnt
-            percent = (curr / total_imgs) * 100
-            sys.stdout.write(f"\r[INFO] Progress: {curr}/{total_imgs} ({percent:.1f}%) ")
-            sys.stdout.flush()
-            t.join(0.1)
+        end_wall = time.time()
 
-    sys.stdout.write(f"\r[INFO] Progress: {total_imgs}/{total_imgs} (100.0%) Done!\n")
-
-    end_wall = time.time()
-    monitor.stop_evt.set()
+    finally:
+        monitor.stop_evt.set()
+        monitor.join(timeout=1.0)
     
     # REPORT GENERATION
     total_wall_time = end_wall - start_wall
