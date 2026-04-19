@@ -22,6 +22,11 @@ DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000
 # Benchmark configuration
 ACTIVE_THREADS = 2  # KV260 can do 4 threads at maximum 
 
+# Automated Transfer Configuration
+# If BOARD_IP is set to None, transfer will be skipped unless --ip is provided in CLI
+BOARD_IP = "147.32.163.22"  # <--- Set your board's IP here
+BOARD_USER = "root"
+
 def get_power_mw():
     """
     Reads the current SOM power consumption from the Kria system.

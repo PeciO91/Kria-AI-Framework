@@ -3,7 +3,7 @@ import sys
 import subprocess
 import argparse
 
-# --- Path auto-fix to find configs in project root ---
+# --- Path auto-fix ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if parent_dir not in sys.path:
@@ -12,16 +12,14 @@ if parent_dir not in sys.path:
 from model_config import get_active_model
 from board_config import DPU_ARCH_PATH
 
-def run_compiler():
-    # 1. Load configuration
-    m_cfg = get_active_model()
+def run_compiler(model_id):
+    # 1. Load configuration (FIXED: Now uses the passed model_id)
+    m_cfg = get_active_model(model_id)
     model_name = m_cfg['name'].lower()
     
     # 2. Define input/output paths
-    # Input is the xmodel from the quantizer output folder
     quant_dir = os.path.join("build", model_name, "quantize_result")
     
-    # Automatically find the generated xmodel (usually named after the class, e.g., ResNet_int.xmodel)
     quant_model = None
     if os.path.exists(quant_dir):
         for f in os.listdir(quant_dir):
@@ -30,21 +28,16 @@ def run_compiler():
                 break
             
     if not quant_model:
-        print(f"Error: No quantized xmodel found in {quant_dir}. Did you run the quantizer in 'test' mode?")
+        print(f"Error: No quantized xmodel found in {quant_dir}.")
         return
 
-    # Output directory for the compiled instructions
     output_dir = os.path.join("build", model_name, "compiled")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"=== Starting Compilation: {m_cfg['name']} ===")
     print(f"=== Target Architecture: {DPU_ARCH_PATH} ===")
 
-    # 3. Construct the Vitis AI Compiler command (vai_c_xir)
-    # --xmodel:   quantized model from NNDCT
-    # --arch:     architecture description from board_config
-    # --net_name: name for the final hardware-ready xmodel
-    # --output_dir: where the compiled instructions will be stored
+    # 3. Construct the Vitis AI Compiler command
     command = [
         "vai_c_xir",
         "--xmodel", quant_model,
@@ -57,7 +50,6 @@ def run_compiler():
 
     # 4. Run the compilation process
     try:
-        # We capture output to show it in the console
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         print(result.stdout)
         print(f"=== Compilation Successful! ===")
@@ -70,6 +62,5 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, help='Model ID from model_config.py')
     args = parser.parse_args()
 
-    # Pass the CLI argument to the config getter
-    m_cfg = get_active_model(args.model)
-    run_compiler()
+    # Pass the CLI argument INTO the function
+    run_compiler(args.model)

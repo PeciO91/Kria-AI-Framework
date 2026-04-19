@@ -41,17 +41,18 @@ def load_model_skeleton(m_cfg):
     else:
         raise ValueError(f"Unknown source: {source}. Use 'torchvision' or 'custom'.")
 
-def prepare_model(m_cfg, d_cfg, device):
+def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     """
     Consolidated loader: 
     1. Loads skeleton 
     2. Adapts last layer (Sequential-aware)
-    3. Handles Pruning (Slimming architecture)
+    3. Handles Pruning (Slimming architecture via provided threshold)
     4. Loads weights via absolute paths
     """
-    # 0. Setup Absolute Paths
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, '..'))
+    # 0. Setup Absolute Paths relative to this script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Assuming scripts/ is inside the project root
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
     
     # 1. Load Architecture
     model = load_model_skeleton(m_cfg)
@@ -74,27 +75,23 @@ def prepare_model(m_cfg, d_cfg, device):
         raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
 
     # 3. Handle Pruning (Optimizer logic)
-    # Convention: If {name}_pruned.pt exists, we use it and slim the model
+    # Check if a pruned file exists
     target_weight_path = m_cfg['model_path']
     pruned_weight_path = target_weight_path.replace(".pt", "_pruned.pt")
     abs_pruned_path = os.path.join(project_root, pruned_weight_path)
 
-    if os.path.exists(abs_pruned_path):
+    # Use pruned weights if they exist AND a threshold is provided
+    if os.path.exists(abs_pruned_path) and prune_threshold is not None:
         if not HAS_PRUNER:
             print("[WARN] Pruned weights detected but Pruner (NNDCT) not available. " 
-                  "Loading standard weights instead.")
+                  "Is this the Kria board? Pruned models require NNDCT to load.")
         else:
-            print(f"[INFO] Pruned weights detected: {pruned_weight_path}")
-            print(f"[INFO] Slimming architecture via Vitis AI Pruner...")
-            
+            print(f"[INFO] Pruned weights detected. Slimming architecture (Ratio: {prune_threshold})")
             input_h, input_w = m_cfg['input_shape']
             dummy_input = torch.randn([1, 3, input_h, input_w]).to(device)
             
-            # Re-initialize pruner on the adapted skeleton
             pruner = Pruner(model, dummy_input)
-            
-            # NOTE: The threshold must match the one used in run_optimizer.py
-            model = pruner.prune(threshold=0.2) 
+            model = pruner.prune(threshold=prune_threshold) 
             target_weight_path = pruned_weight_path
 
     # 4. Load Final Weights
@@ -107,6 +104,7 @@ def prepare_model(m_cfg, d_cfg, device):
     if isinstance(checkpoint, torch.nn.Module):
         model = checkpoint
     else:
+        # Standard state_dict loading
         model.load_state_dict(checkpoint)
         
     model.to(device)

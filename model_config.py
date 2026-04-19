@@ -25,7 +25,7 @@ MODELS = {
         "model_class": "mobilenet_v2",
         "last_layer_name": "classifier",
         "input_shape": (224, 224),
-        "model_path": "models/mobilenetv2.pt",
+        "model_path": "models/mobilenet_v2.pt",
         "gops": 0.44
     },
     "mobilenet_v3": {
