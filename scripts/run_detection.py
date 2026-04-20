@@ -59,7 +59,6 @@ def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fi
         
         # Pass the original image and shape so we can draw on it later
         input_queue.put((img_int8, orig_img, orig_shape, os.path.basename(img_path)))
-    return boxes, scores, class_ids
 
 # =============================================================
 # CONSUMER: DPU Inference & NMS
@@ -95,11 +94,15 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_po
         local_dpu_time += (time.perf_counter() - t_start)
 
         # 2. DEQUANTIZE ALL 3 TENSORS
-        # Convert INT8 back to Float32 using the unique fix_point for each tensor
         float_outs = [np.array(out) * (2 ** -fix_pos) for out, fix_pos in zip(output_data, fix_pos_outs)]
 
-        # 3. DECODE & FILTER (Pass the list of 3 tensors)
-        boxes, scores, class_ids = decode_yolo_output(float_outs, conf_thresh)
+        # --- FIX: SORT TENSORS BY SPATIAL SIZE ---
+        # Ensure P3 (largest grid) is first, then P4, then P5 (smallest grid)
+        # We sort by shape[1] which is the Height dimension.
+        sorted_float_outs = sorted(float_outs, key=lambda x: x.shape[1], reverse=True)
+
+        # 3. DECODE & FILTER (Pass the sorted list)
+        boxes, scores, class_ids = decode_yolo_output(sorted_float_outs, conf_thresh)
         
         # 4. NON-MAXIMUM SUPPRESSION (NMS)
         if len(boxes) > 0:
@@ -151,41 +154,53 @@ def decode_yolo_output(dpu_outputs, conf_threshold):
     boxes, scores, class_ids = [], [], []
 
     for i, pred in enumerate(dpu_outputs):
-        # pred is a numpy array (1, H, W, 3*(5+classes))
-        # Convert to float and de-quantize happens in consumer_worker
-        bs, ny, nx, _ = pred.shape
-        num_classes = (pred.shape[-1] // 3) - 5
-        pred = pred.reshape(1, 3, ny, nx, 5 + num_classes)
+        bs, ny, nx, channels = pred.shape
+        num_classes = (channels // 3) - 5
+        pred = pred.reshape(1, ny, nx, 3, 5 + num_classes)
+        pred = pred.transpose(0, 3, 1, 2, 4)
+
+        # 1. Apply Sigmoid ONLY to the Object Confidence (index 4)
+        # This saves the CPU from doing exp() on thousands of background pixels
+        obj_conf = 1 / (1 + np.exp(-pred[..., 4]))
         
-        # Sigmoid activation (CPU side)
-        pred = 1 / (1 + np.exp(-pred)) 
+        # 2. Filter pixels early using the confidence threshold
+        mask = obj_conf > conf_threshold
         
-        # Build Grid
-        grid_y, grid_x = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
-        grid = np.stack((grid_x, grid_y), axis=-1).reshape(1, 1, ny, nx, 2)
-        
-        # Center XY and WH decoding
-        xy = (pred[..., 0:2] * 2. - 0.5 + grid) * strides[i]
-        wh = (pred[..., 2:4] * 2) ** 2 * np.array(anchors[i]).reshape(1, 3, 1, 1, 2)
-        
-        # Extract Confidence and Class
-        obj_conf = pred[..., 4]
-        cls_conf = np.max(pred[..., 5:], axis=-1)
-        total_conf = obj_conf * cls_conf
-        
-        mask = total_conf > conf_threshold
         if mask.any():
-            # Apply mask and extract valid boxes
-            v_xy = xy[mask]
-            v_wh = wh[mask]
-            v_conf = total_conf[mask]
-            v_cls = np.argmax(pred[..., 5:][mask], axis=-1)
+            # 3. Only process the candidates that passed the threshold
+            v_pred = pred[mask] 
+            v_obj_conf = obj_conf[mask]
             
-            for box, sc, cl in zip(np.concatenate([v_xy, v_wh], axis=-1), v_conf, v_cls):
+            # 4. Apply Sigmoid to coords and classes ONLY for valid candidates
+            v_pred[..., :4] = 1 / (1 + np.exp(-v_pred[..., :4])) 
+            v_pred[..., 5:] = 1 / (1 + np.exp(-v_pred[..., 5:])) 
+            
+            # 5. Build grid for valid pixels only
+            grid_y, grid_x = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
+            grid = np.stack((grid_x, grid_y), axis=-1).reshape(1, 1, ny, nx, 2)
+            # Match the grid to the mask shape (1, 3, Ny, Nx, 2)
+            v_grid = np.repeat(grid, 3, axis=1)[mask]
+            
+            # 6. Decode coordinates (xywh)
+            v_xy = (v_pred[..., 0:2] * 2. - 0.5 + v_grid) * strides[i]
+            
+            # Match anchors to the mask shape
+            anchors_tensor = np.array(anchors[i]).reshape(1, 3, 1, 1, 2)
+            v_anchors = np.tile(anchors_tensor, (1, 1, ny, nx, 1))[mask]
+            v_wh = (v_pred[..., 2:4] * 2) ** 2 * v_anchors
+
+            # 7. Calculate final scores and extract classes
+            cls_probs = v_pred[..., 5:]
+            cls_id = np.argmax(cls_probs, axis=-1)
+            cls_conf = np.take_along_axis(cls_probs, cls_id[..., None], axis=-1).flatten()
+            total_conf = v_obj_conf * cls_conf
+            
+            # 8. Add to final list
+            for box, sc, cl in zip(np.concatenate([v_xy, v_wh], axis=-1), total_conf, cls_id):
                 boxes.append([box[0]-box[2]/2, box[1]-box[3]/2, box[2], box[3]])
                 scores.append(float(sc))
                 class_ids.append(int(cl))
-                
+
     return boxes, scores, class_ids
 
 # =============================================================

@@ -17,6 +17,7 @@ if parent_dir not in sys.path:
 from model_config import get_active_model
 from dataset_config import get_active_dataset
 from model_utils import prepare_model
+from detection_utils import letterbox
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, help='Model ID')
@@ -46,6 +47,29 @@ class SimpleImageDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         return image, 0  # Return dummy label 0, quantizer ignores it anyway
+
+class YoloCalibrationDataset(Dataset):
+    def __init__(self, root_dir, input_shape, transform=None):
+        self.root_dir = root_dir
+        self.input_shape = input_shape # (H, W)
+        self.transform = transform
+        self.image_files = [f for f in os.listdir(root_dir) 
+                           if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.root_dir, self.image_files[idx])
+        img = cv2.imread(img_path)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Use letterbox to match deployment!
+        img, _, _ = letterbox(img, new_shape=self.input_shape)
+        
+        if self.transform:
+            img = self.transform(img)
+        return img, 0
 
 def evaluate(model, loader, loss_fn):
     model.eval()
@@ -86,17 +110,23 @@ def run_quantization():
     
     # Choose dataset loader based on task type
     if m_cfg.get('type') == 'classification':
-        # Verify dataset structure for ImageFolder (needs sub-folders)
-        subdirs = [d for d in os.listdir(d_cfg['calib_path']) if os.path.isdir(os.path.join(d_cfg['calib_path'], d))]
-        if not subdirs:
-            raise RuntimeError(f"Quantization Error: {d_cfg['calib_path']} must contain at least one subdirectory (e.g. 'data/calib/images/1.jpg') for ImageFolder to work.")
         dataset = ImageFolder(root=d_cfg['calib_path'], transform=transform)
+    elif m_cfg.get('type') == 'detection':
+        print(f"[INFO] Using YOLO Letterbox loader for detection calibration.")
+        # For YOLO, we remove Resize from transforms because YoloCalibrationDataset handles it
+        yolo_transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(d_cfg['normalization']['mean'], d_cfg['normalization']['std'])
+        ])
+        dataset = YoloCalibrationDataset(
+            root_dir=d_cfg['calib_path'], 
+            input_shape=m_cfg['input_shape'], 
+            transform=yolo_transform
+            )
     else:
-        # Detection and Segmentation just use flat folders
+        # Segmentation still uses the simple loader
         print(f"[INFO] Using flat-folder image loader for {m_cfg.get('type')} task.")
         dataset = SimpleImageDataset(root_dir=d_cfg['calib_path'], transform=transform)
-        if len(dataset) == 0:
-            raise RuntimeError(f"Quantization Error: No images found in {d_cfg['calib_path']}.")
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False)
     input_h, input_w = m_cfg['input_shape']
