@@ -54,7 +54,20 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     project_root = os.path.abspath(os.path.join(script_dir, '..'))
     
     # 1. Load Architecture
-    model = load_model_skeleton(m_cfg)
+    if m_cfg.get('name', '').lower().startswith('yolo'):
+        # Add the yolov5 git folder to python path so imports inside it work
+        yolo_path = os.path.join(project_root, 'yolov5') # Assumes folder is named 'yolov5'
+        if yolo_path not in sys.path:
+            sys.path.append(yolo_path)
+        
+        from models.common import DetectMultiBackend
+        print(f"[INFO] Loading YOLOv5 model via DetectMultiBackend...")
+        # This loads the YAML and Weights automatically
+        model = DetectMultiBackend(weights=os.path.join(project_root, m_cfg['model_path']), device=device)
+        model = model.model # Get the underlying nn.Module
+    else:
+        # Standard loading for ResNet/MobileNet
+        model = load_model_skeleton(m_cfg)
     
     # 2. Dynamic Layer Replacement
     # Only do this if the model is a classification model!

@@ -180,6 +180,55 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_po
     results[thread_id] = (local_total, local_dpu_time)
     del runner
 
+def decode_yolo_output(dpu_outputs, conf_threshold):
+    """
+    Decodes 3 raw tensors [P3, P4, P5] from the DPU.
+    P3: 80x80, P4: 40x40, P5: 20x20
+    """
+    # Standard YOLOv5n anchors
+    anchors = [ [[10,13], [16,30], [33,23]], [[30,61], [62,45], [59,119]], [[116,90], [156,198], [373,326]] ]
+    strides = [8, 16, 32]
+    
+    boxes, scores, class_ids = [], [], []
+
+    for i, pred in enumerate(dpu_outputs):
+        # pred is a numpy array (1, H, W, 3*(5+classes))
+        # Convert to float and de-quantize happens in consumer_worker
+        bs, ny, nx, _ = pred.shape
+        num_classes = (pred.shape[-1] // 3) - 5
+        pred = pred.reshape(1, 3, ny, nx, 5 + num_classes)
+        
+        # Sigmoid activation (CPU side)
+        pred = 1 / (1 + np.exp(-pred)) 
+        
+        # Build Grid
+        grid_y, grid_x = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
+        grid = np.stack((grid_x, grid_y), axis=-1).reshape(1, 1, ny, nx, 2)
+        
+        # Center XY and WH decoding
+        xy = (pred[..., 0:2] * 2. - 0.5 + grid) * strides[i]
+        wh = (pred[..., 2:4] * 2) ** 2 * np.array(anchors[i]).reshape(1, 3, 1, 1, 2)
+        
+        # Extract Confidence and Class
+        obj_conf = pred[..., 4]
+        cls_conf = np.max(pred[..., 5:], axis=-1)
+        total_conf = obj_conf * cls_conf
+        
+        mask = total_conf > conf_threshold
+        if mask.any():
+            # Apply mask and extract valid boxes
+            v_xy = xy[mask]
+            v_wh = wh[mask]
+            v_conf = total_conf[mask]
+            v_cls = np.argmax(pred[..., 5:][mask], axis=-1)
+            
+            for box, sc, cl in zip(np.concatenate([v_xy, v_wh], axis=-1), v_conf, v_cls):
+                boxes.append([box[0]-box[2]/2, box[1]-box[3]/2, box[2], box[3]])
+                scores.append(float(sc))
+                class_ids.append(int(cl))
+                
+    return boxes, scores, class_ids
+
 # =============================================================
 # MAIN LOGIC
 # =============================================================
