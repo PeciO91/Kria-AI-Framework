@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import os
+import sys
 import importlib.util
 
 # Pruner is only available on the Host/Docker side (NNDCT)
@@ -13,6 +14,10 @@ except ImportError:
 
 def load_model_skeleton(m_cfg):
     """Instantiates the raw architecture based on the source (Torchvision or Custom)."""
+    # 0. Setup Absolute Paths
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.abspath(os.path.join(script_dir, '..'))
+
     source = m_cfg.get('source', 'torchvision')
     model_class = m_cfg['model_class']
     
@@ -27,16 +32,36 @@ def load_model_skeleton(m_cfg):
         file_path = m_cfg.get('file_path')
         if not file_path or not os.path.exists(file_path):
             raise FileNotFoundError(f"Custom model file not found at: {file_path}")
+        
+        # --- YOLO SPECIFIC PATH INJECTION ---
+        if "yolo" in m_cfg['name'].lower():
+            # Pointing to your specific yolov5n folder
+            yolo_root = os.path.join(project_root, 'models', 'yolov5') 
+            if yolo_root not in sys.path:
+                sys.path.append(yolo_root)
             
+            # YAML path needed for DetectionModel initialization
+            cfg_path = os.path.join(yolo_root, 'models', 'yolov5n.yaml')
+            
+            # Load the module specifically
+            spec = importlib.util.spec_from_file_location("models.yolo", file_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            # Return the model class (usually DetectionModel) with the cfg file
+            try:
+                return getattr(module, model_class)(cfg=cfg_path)
+            except Exception as e:
+                print(f"[ERROR] Failed to instantiate {model_class}: {e}")
+                raise e
+
+        # Standard custom loader for other models (e.g. UNet)
         module_name = os.path.basename(file_path).replace(".py", "")
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         
-        try:
-            return getattr(module, model_class)()
-        except AttributeError:
-            raise AttributeError(f"Class '{model_class}' not found in file '{file_path}'.")
+        return getattr(module, model_class)()
     
     else:
         raise ValueError(f"Unknown source: {source}. Use 'torchvision' or 'custom'.")
@@ -46,31 +71,16 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     Consolidated loader: 
     1. Loads skeleton 
     2. Adapts last layer (ONLY for classification)
-    3. Handles Pruning (Slimming architecture via provided threshold)
+    3. Handles Pruning
     4. Loads weights via absolute paths
     """
-    # 0. Setup Absolute Paths relative to this script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.abspath(os.path.join(script_dir, '..'))
     
     # 1. Load Architecture
-    if m_cfg.get('name', '').lower().startswith('yolo'):
-        # Add the yolov5 git folder to python path so imports inside it work
-        yolo_path = os.path.join(project_root, 'yolov5') # Assumes folder is named 'yolov5'
-        if yolo_path not in sys.path:
-            sys.path.append(yolo_path)
-        
-        from models.common import DetectMultiBackend
-        print(f"[INFO] Loading YOLOv5 model via DetectMultiBackend...")
-        # This loads the YAML and Weights automatically
-        model = DetectMultiBackend(weights=os.path.join(project_root, m_cfg['model_path']), device=device)
-        model = model.model # Get the underlying nn.Module
-    else:
-        # Standard loading for ResNet/MobileNet
-        model = load_model_skeleton(m_cfg)
+    model = load_model_skeleton(m_cfg)
     
     # 2. Dynamic Layer Replacement
-    # Only do this if the model is a classification model!
     if m_cfg.get('type') == 'classification':
         num_classes = len(d_cfg['classes'])
         last_layer_name = m_cfg.get('last_layer_name', 'fc')
@@ -85,22 +95,17 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
                 setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
         except AttributeError:
             raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
-    else:
-        print(f"[INFO] {m_cfg.get('type').capitalize()} model detected. Skipping Linear layer replacement.")
 
-    # 3. Handle Pruning (Optimizer logic)
+    # 3. Handle Pruning
     target_weight_path = m_cfg['model_path']
     pruned_weight_path = target_weight_path.replace(".pt", "_pruned.pt")
     abs_pruned_path = os.path.join(project_root, pruned_weight_path)
 
     if os.path.exists(abs_pruned_path) and prune_threshold is not None:
-        if not HAS_PRUNER:
-            print("[WARN] Pruned weights detected but Pruner (NNDCT) not available.")
-        else:
+        if HAS_PRUNER:
             print(f"[INFO] Pruned weights detected. Slimming architecture (Ratio: {prune_threshold})")
             input_h, input_w = m_cfg['input_shape']
             dummy_input = torch.randn([1, 3, input_h, input_w]).to(device)
-            
             pruner = Pruner(model, dummy_input)
             model = pruner.prune(threshold=prune_threshold) 
             target_weight_path = pruned_weight_path
@@ -110,13 +115,19 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     if not os.path.exists(abs_weight_path):
         raise FileNotFoundError(f"Weight file not found: {abs_weight_path}")
         
+    print(f"[INFO] Loading weights from: {abs_weight_path}")
     checkpoint = torch.load(abs_weight_path, map_location=device)
     
-    if isinstance(checkpoint, torch.nn.Module):
-        model = checkpoint
+    # Smart weight extraction for YOLOv5 dictionary format
+    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+        state_dict = checkpoint['model'].state_dict() if hasattr(checkpoint['model'], 'state_dict') else checkpoint['model']
+    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
     else:
-        # strict=False is safer for YOLO models which often have slight key mismatches in the Detect head
-        model.load_state_dict(checkpoint, strict=False)
+        state_dict = checkpoint if isinstance(checkpoint, dict) else checkpoint.state_dict()
+        
+    # strict=False is required because the Detect head has been stripped in the code
+    model.load_state_dict(state_dict, strict=False)
         
     model.to(device)
     model.eval()

@@ -1,7 +1,7 @@
 # =============================================================
 # DATASET CONFIGURATION
 # =============================================================
-ACTIVE_DATASET_ID = "intel_images"
+ACTIVE_DATASET_ID = "coco_detection"  # Default dataset; can be overridden via CLI
 
 DATASETS = {
     "intel_images": {

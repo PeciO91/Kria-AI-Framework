@@ -55,17 +55,17 @@ MODELS = {
         "model_path": "models/inception_v3.pt",
         "gops": 5.71
     },
-    "yolov5s": {
+    "yolov5n": {
         "source": "custom",
-        "file_path": "models/yolov5s.py",      # You will need to provide this model file
+        "file_path": "models/yolov5/models/yolo.py",      # Update this if you use the wrapper!
         "type": "detection",
-        "name": "YOLOv5-Small",
-        "model_class": "YOLOv5",               # The main class inside yolov5s.py
-        "input_shape": (640, 640),             # YOLO standard resolution
-        "model_path": "models/yolov5s.pt",
-        "gops": 15.8,
-        "conf_threshold": 0.25,                # Minimum score to keep a bounding box
-        "iou_threshold": 0.45                  # Overlap threshold for NMS
+        "name": "YOLOv5n",
+        "model_class": "Model",               
+        "input_shape": (640, 640),             
+        "model_path": "models/yolov5n.pt",     # Ensure this matches your file
+        "gops": 4.5,                           # YOLOv5n is ~4.5 GOPs
+        "conf_threshold": 0.25,                
+        "iou_threshold": 0.45                  
     },
     "unet_res18": {
         "source": "custom",

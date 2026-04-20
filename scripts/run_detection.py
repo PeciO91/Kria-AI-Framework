@@ -59,62 +59,21 @@ def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fi
         
         # Pass the original image and shape so we can draw on it later
         input_queue.put((img_int8, orig_img, orig_shape, os.path.basename(img_path)))
-
-# =============================================================
-# YOLO DECODER (Generalized for Nx85 fused outputs)
-# =============================================================
-def decode_yolo_output(dpu_tensor, conf_threshold):
-    """
-    Decodes standard YOLOv5 output (Batch, 25200, 85).
-    Filters out boxes below the confidence threshold to save CPU time.
-    Returns: List of [x1, y1, x2, y2, conf, class_id]
-    """
-    # 85 = cx, cy, w, h, obj_conf, class1, class2 ... class80
-    predictions = dpu_tensor[0] # Drop batch dimension
-    
-    # Filter by object confidence first (Column 4)
-    obj_conf = predictions[:, 4]
-    valid_indices = obj_conf > conf_threshold
-    valid_preds = predictions[valid_indices]
-    
-    boxes = []
-    scores = []
-    class_ids = []
-    
-    for pred in valid_preds:
-        # Get highest class score
-        class_conf = np.max(pred[5:])
-        class_id = np.argmax(pred[5:])
-        
-        # Final confidence = objectness * class_score
-        conf = pred[4] * class_conf
-        if conf > conf_threshold:
-            cx, cy, w, h = pred[0:4]
-            # Convert Center-X, Center-Y, Width, Height to X1, Y1, X2, Y2
-            x1 = cx - w / 2
-            y1 = cy - h / 2
-            x2 = cx + w / 2
-            y2 = cy + h / 2
-            
-            # Format required by cv2.dnn.NMSBoxes is [x, y, w, h]
-            boxes.append([x1, y1, w, h]) 
-            scores.append(float(conf))
-            class_ids.append(class_id)
-            
     return boxes, scores, class_ids
 
 # =============================================================
 # CONSUMER: DPU Inference & NMS
 # =============================================================
-def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_pos_out):
+def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_pos_outs):
     global progress_cnt
     runner = vart.Runner.create_runner(dpu_subgraph, "run")
     output_tensors = runner.get_output_tensors()
-    output_ndim = tuple(output_tensors[0].dims)
     
     local_total = 0
     local_dpu_time = 0
-    output_data = [np.empty(output_ndim, dtype=np.int8)]
+    
+    # CRITICAL FIX: Create empty arrays for ALL 3 output tensors
+    output_data = [np.empty(tuple(t.dims), dtype=np.int8) for t in output_tensors]
     
     conf_thresh = m_cfg.get('conf_threshold', 0.25)
     iou_thresh = m_cfg.get('iou_threshold', 0.45)
@@ -135,12 +94,12 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_po
         runner.wait(jid)
         local_dpu_time += (time.perf_counter() - t_start)
 
-        # 2. DEQUANTIZE
-        # Convert INT8 back to Float32 using the output fix_point
-        float_out = np.array(output_data[0]) * (2 ** -fix_pos_out)
+        # 2. DEQUANTIZE ALL 3 TENSORS
+        # Convert INT8 back to Float32 using the unique fix_point for each tensor
+        float_outs = [np.array(out) * (2 ** -fix_pos) for out, fix_pos in zip(output_data, fix_pos_outs)]
 
-        # 3. DECODE & FILTER
-        boxes, scores, class_ids = decode_yolo_output(float_out, conf_thresh)
+        # 3. DECODE & FILTER (Pass the list of 3 tensors)
+        boxes, scores, class_ids = decode_yolo_output(float_outs, conf_thresh)
         
         # 4. NON-MAXIMUM SUPPRESSION (NMS)
         if len(boxes) > 0:
@@ -246,7 +205,7 @@ def run_detection(model_id, dataset_id, thread_override):
     
     model_name_lower = m_cfg['name'].lower()
     model_path = f"{model_name_lower}_kria.xmodel"
-    dataset_path = d_cfg['calib_path'] # Using the flat folder for demo
+    dataset_path = "datasets/coco/" # Using the flat folder for demo
     
     out_dir = f"outputs_{model_name_lower}"
     os.makedirs(out_dir, exist_ok=True)
@@ -267,7 +226,8 @@ def run_detection(model_id, dataset_id, thread_override):
     out_tensors = dummy_runner.get_output_tensors()
     dpu_shape = tuple(in_tensors[0].dims)
     fix_pos_in = in_tensors[0].get_attr("fix_point")
-    fix_pos_out = out_tensors[0].get_attr("fix_point")
+    # CRITICAL FIX: Get fix_points for all 3 output tensors
+    fix_pos_outs = [t.get_attr("fix_point") for t in out_tensors] 
     del dummy_runner
 
     all_images = [os.path.join(dataset_path, f) for f in os.listdir(dataset_path) if f.endswith(('.jpg','.png'))]
@@ -295,7 +255,7 @@ def run_detection(model_id, dataset_id, thread_override):
 
         c_threads = []
         for i in range(num_consumers):
-            t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, out_dir, m_cfg, fix_pos_out))
+            t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, out_dir, m_cfg, fix_pos_outs))
             t.start()
             c_threads.append(t)
 
