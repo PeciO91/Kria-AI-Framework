@@ -1,27 +1,18 @@
-# Python šum
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Modely (příliš velké pro základní Git)
 models/
 
-# Vitis AI výstupy
 build/
-output_kria/
 *.xmodel
 *.onnx_int.onnx
 
-# Data a logy
 data/
-*.log
-*.csv
-vaitrace_resources/
 
-# IDE nastavení
 .vscode/
 .idea/
 
-quantize_result/
-results_*.txt
-results_*.txt
+results/
+
+.windsurfrules
