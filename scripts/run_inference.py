@@ -23,21 +23,21 @@ from dataset_config import get_active_dataset
 from board_config import ACTIVE_THREADS, DPU_PEAK_GOPS, get_power_mw
 from board_utils import (
     PowerMonitor, ProgressCounter, setup_dpu,
-    compute_norm_constants, preprocess_image, format_report,
+    build_norm_lut, preprocess_image, format_report,
 )
 
 
 # =============================================================
-# PRODUCER: CPU preprocessing
+# PRODUCER: resize + LUT normalization
 # =============================================================
 def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fix_pos):
-    math_scale, math_shift = compute_norm_constants(norm_mean, norm_std, fix_pos)
+    lut = build_norm_lut(norm_mean, norm_std, fix_pos)
     for img_path, class_idx in image_chunk:
         img = cv2.imread(img_path)
         if img is None:
             continue
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_int8 = preprocess_image(img_rgb, dpu_shape, math_scale, math_shift)
+        img_int8 = preprocess_image(img_rgb, dpu_shape, lut)
         input_queue.put((img_int8, class_idx))
 
 
@@ -94,7 +94,9 @@ def run_inference(model_id, dataset_id, thread_override):
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
 
-    num_consumers = thread_override if thread_override else ACTIVE_THREADS
+    # Default to 3 consumers (KV260 supports up to 4) + 4 producers; LUT
+    # normalization keeps the producers ahead of the DPU.
+    num_consumers = thread_override if thread_override else max(ACTIVE_THREADS, 3)
     num_producers = 4
 
     model_path = f"{model_id}_kria.xmodel"
@@ -124,7 +126,7 @@ def run_inference(model_id, dataset_id, thread_override):
         print(f"[ERROR] No images found in {dataset_path}")
         return
 
-    img_queue = queue.Queue(maxsize=50)
+    img_queue = queue.Queue(maxsize=80)
     progress = ProgressCounter()
     results = [None] * num_consumers
     total_imgs = len(all_images)
@@ -150,6 +152,8 @@ def run_inference(model_id, dataset_id, thread_override):
 
         p_threads = []
         for i in range(num_producers):
+            if i >= len(chunks):
+                break
             t = threading.Thread(target=producer_worker, args=(
                 chunks[i], img_queue, dpu_shape,
                 d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in))

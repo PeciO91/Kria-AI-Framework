@@ -25,7 +25,7 @@ from dataset_config import get_active_dataset
 from board_config import ACTIVE_THREADS, DPU_PEAK_GOPS, get_power_mw
 from board_utils import (
     PowerMonitor, ProgressCounter, setup_dpu,
-    compute_norm_constants, preprocess_image, format_report,
+    build_norm_lut, preprocess_image, format_report,
 )
 
 
@@ -40,17 +40,17 @@ CITYSCAPES_COLORS = np.array([
 
 
 # =============================================================
-# PRODUCER: standard resize + INT8 normalization
+# PRODUCER: resize + LUT normalization
 # =============================================================
 def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fix_pos):
-    math_scale, math_shift = compute_norm_constants(norm_mean, norm_std, fix_pos)
+    lut = build_norm_lut(norm_mean, norm_std, fix_pos)
     for img_path in image_chunk:
         orig_img = cv2.imread(img_path)
         if orig_img is None:
             continue
         orig_shape = orig_img.shape[:2]
         img_rgb = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
-        img_int8 = preprocess_image(img_rgb, dpu_shape, math_scale, math_shift)
+        img_int8 = preprocess_image(img_rgb, dpu_shape, lut)
         input_queue.put((img_int8, orig_img, orig_shape, os.path.basename(img_path)))
 
 
@@ -127,8 +127,10 @@ def run_segmentation(model_id, dataset_id, thread_override):
               f"Use run_inference.py or run_detection.py instead.")
         sys.exit(1)
 
-    num_consumers = thread_override if thread_override else ACTIVE_THREADS
-    num_producers = 2
+    # Default to 3 consumers (KV260 supports up to 4) + 4 producers; LUT
+    # normalization keeps the producers ahead of the DPU.
+    num_consumers = thread_override if thread_override else max(ACTIVE_THREADS, 3)
+    num_producers = 4
 
     model_path = f"{model_id}_kria.xmodel"
     dataset_path = d_cfg['calib_path']
@@ -154,8 +156,8 @@ def run_segmentation(model_id, dataset_id, thread_override):
         print(f"[ERROR] No images found in {dataset_path}")
         return
 
-    img_queue = queue.Queue(maxsize=20)
-    write_queue = queue.Queue(maxsize=64)
+    img_queue = queue.Queue(maxsize=40)
+    write_queue = queue.Queue(maxsize=128)
     progress = ProgressCounter()
     results = [None] * num_consumers
     total_imgs = len(all_images)
@@ -184,6 +186,8 @@ def run_segmentation(model_id, dataset_id, thread_override):
 
         p_threads = []
         for i in range(num_producers):
+            if i >= len(chunks):
+                break
             t = threading.Thread(target=producer_worker, args=(
                 chunks[i], img_queue, dpu_shape,
                 d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in))

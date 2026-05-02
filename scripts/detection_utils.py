@@ -75,28 +75,37 @@ def non_max_suppression(boxes, scores, conf_threshold, iou_threshold, class_ids=
     """
     OpenCV NMS wrapper with optional per-class suppression.
 
-    boxes  : list of [x, y, w, h]
-    scores : list of float
-    class_ids : list of int, optional
+    Parameters
+    ----------
+    boxes : array-like
+        Sequence (or ndarray) of [x, y, w, h] boxes.
+    scores : array-like
+        One score per box.
+    class_ids : array-like, optional
         When provided, applies the standard "class offset" trick: boxes from
         different classes are shifted apart in coordinate space so they
         cannot suppress each other. This matches YOLOv5's per-class NMS
         semantics and works on every OpenCV version that exposes NMSBoxes.
     class_offset : int
-        Per-class spatial offset; only needs to exceed the input image size.
+        Spatial shift per class id; must exceed the input image size.
 
-    Returns the indices of kept boxes (relative to the input lists).
+    Returns
+    -------
+    indices : ndarray
+        1-D int array of kept box indices (relative to the input order).
     """
     if len(boxes) == 0:
         return []
 
     if class_ids is None:
-        nms_boxes = boxes
+        nms_boxes = boxes if isinstance(boxes, list) else np.asarray(boxes).tolist()
     else:
-        nms_boxes = [
-            [b[0] + cid * class_offset, b[1] + cid * class_offset, b[2], b[3]]
-            for b, cid in zip(boxes, class_ids)
-        ]
+        # Vectorized class-offset shift (no Python loop).
+        boxes_arr = np.asarray(boxes, dtype=np.float32)
+        offsets = np.asarray(class_ids, dtype=np.float32) * float(class_offset)
+        boxes_arr[:, 0] += offsets
+        boxes_arr[:, 1] += offsets
+        nms_boxes = boxes_arr.tolist()
 
     indices = cv2.dnn.NMSBoxes(nms_boxes, scores, conf_threshold, iou_threshold)
     if len(indices) > 0:
