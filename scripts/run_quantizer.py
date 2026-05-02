@@ -6,6 +6,7 @@ import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
 from torch.utils.data import Dataset
 from PIL import Image 
+import cv2
 import pytorch_nndct
 
 # --- Path auto-fix ---

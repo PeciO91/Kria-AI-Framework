@@ -35,16 +35,18 @@ def load_model_skeleton(m_cfg):
         
         # --- YOLO SPECIFIC PATH INJECTION ---
         if "yolo" in m_cfg['name'].lower():
-            # Pointing to your specific yolov5n folder
-            yolo_root = os.path.join(project_root, 'models', 'yolov5') 
+            # Add yolov5n directory to path for imports (includes models/, utils/, etc.)
+            yolo_root = os.path.join(project_root, 'models', 'yolov5n')
             if yolo_root not in sys.path:
                 sys.path.append(yolo_root)
             
             # YAML path needed for DetectionModel initialization
-            cfg_path = os.path.join(yolo_root, 'models', 'yolov5n.yaml')
+            cfg_path = m_cfg.get('yaml_path', os.path.join(yolo_root, 'models', 'yolov5n.yaml'))
+            if not os.path.exists(cfg_path):
+                raise FileNotFoundError(f"YAML config not found at: {cfg_path}")
             
             # Load the module specifically
-            spec = importlib.util.spec_from_file_location("models.yolo", file_path)
+            spec = importlib.util.spec_from_file_location("yolo", file_path)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             
@@ -95,6 +97,10 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
                 setattr(model, last_layer_name, torch.nn.Linear(in_features, num_classes))
         except AttributeError:
             raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
+    
+    # 2b. YOLO Detect Head - User has already stripped it in yolo.py
+    # The Detect.forward now only runs conv layers and returns raw outputs
+    # No additional stripping needed
 
     # 3. Handle Pruning
     target_weight_path = m_cfg['model_path']

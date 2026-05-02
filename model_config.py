@@ -57,15 +57,16 @@ MODELS = {
     },
     "yolov5n": {
         "source": "custom",
-        "file_path": "models/yolov5/models/yolo.py",      # Update this if you use the wrapper!
+        "file_path": "models/yolov5n/models/yolo.py",  # YOLO model definition
         "type": "detection",
         "name": "YOLOv5n",
-        "model_class": "Model",               
-        "input_shape": (640, 640),             
-        "model_path": "models/yolov5n.pt",     # Ensure this matches your file
+        "model_class": "DetectionModel",
+        "input_shape": (640, 640),
+        "model_path": "models/yolov5n/yolov5n.pt",     # YOLOv5n weights
+        "yaml_path": "models/yolov5n/models/yolov5n.yaml",  # Architecture config
         "gops": 4.5,                           # YOLOv5n is ~4.5 GOPs
-        "conf_threshold": 0.25,                
-        "iou_threshold": 0.45                  
+        "conf_threshold": 0.25,
+        "iou_threshold": 0.45
     },
     "unet_res18": {
         "source": "custom",

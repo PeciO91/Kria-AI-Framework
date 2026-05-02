@@ -1,6 +1,6 @@
 # Kria Vitis AI Universal Deployment Pipeline
 
-This repository provides a modular, automated pipeline for deploying PyTorch models to the Xilinx Kria KV260 FPGA using Vitis AI 3.0. The project orchestrates the entire flow from high-level PyTorch weights to hardware-accelerated DPU instructions.
+This repository provides a modular, automated pipeline for deploying PyTorch models to the Xilinx Kria KV260 FPGA using Vitis AI 3.5. The project orchestrates the entire flow from high-level PyTorch weights to hardware-accelerated DPU instructions.
 
 ## Development Status
 

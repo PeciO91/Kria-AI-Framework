@@ -63,7 +63,7 @@ def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fi
 # =============================================================
 # CONSUMER: DPU Inference & NMS
 # =============================================================
-def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_pos_outs):
+def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, d_cfg, fix_pos_outs):
     global progress_cnt
     runner = vart.Runner.create_runner(dpu_subgraph, "run")
     output_tensors = runner.get_output_tensors()
@@ -122,13 +122,15 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_po
                 scaled_boxes = scale_coords(dpu_shape, xyxy_boxes, orig_shape)
                 
                 # 6. DRAW BOXES
+                class_names = d_cfg.get('classes', None)
                 for i, box in enumerate(scaled_boxes):
                     x1, y1, x2, y2 = map(int, box[:4])
                     cls_id = class_ids[indices[i]]
                     conf = scores[indices[i]]
                     
                     cv2.rectangle(orig_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    label = f"Class {cls_id}: {conf:.2f}"
+                    cls_name = class_names[cls_id] if class_names and cls_id < len(class_names) else f"Class {cls_id}"
+                    label = f"{cls_name}: {conf:.2f}"
                     cv2.putText(orig_img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # Save output image
@@ -145,19 +147,20 @@ def consumer_worker(thread_id, input_queue, dpu_subgraph, out_dir, m_cfg, fix_po
 def decode_yolo_output(dpu_outputs, conf_threshold):
     """
     Decodes 3 raw tensors [P3, P4, P5] from the DPU.
-    P3: 80x80, P4: 40x40, P5: 20x20
+    DPU outputs are (1, C, H, W) format from the stripped Detect head.
     """
     # Standard YOLOv5n anchors
     anchors = [ [[10,13], [16,30], [33,23]], [[30,61], [62,45], [59,119]], [[116,90], [156,198], [373,326]] ]
     strides = [8, 16, 32]
-    
+
     boxes, scores, class_ids = [], [], []
 
     for i, pred in enumerate(dpu_outputs):
+        # DPU output is (1, H, W, C) format
         bs, ny, nx, channels = pred.shape
         num_classes = (channels // 3) - 5
+        # Reshape from (1, H, W, C) to (1, H, W, 3, 5+num_classes)
         pred = pred.reshape(1, ny, nx, 3, 5 + num_classes)
-        pred = pred.transpose(0, 3, 1, 2, 4)
 
         # 1. Apply Sigmoid ONLY to the Object Confidence (index 4)
         # This saves the CPU from doing exp() on thousands of background pixels
@@ -176,17 +179,18 @@ def decode_yolo_output(dpu_outputs, conf_threshold):
             v_pred[..., 5:] = 1 / (1 + np.exp(-v_pred[..., 5:])) 
             
             # 5. Build grid for valid pixels only
+            # pred layout: (1, ny, nx, 3, 85), mask: (1, ny, nx, 3)
             grid_y, grid_x = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
-            grid = np.stack((grid_x, grid_y), axis=-1).reshape(1, 1, ny, nx, 2)
-            # Match the grid to the mask shape (1, 3, Ny, Nx, 2)
-            v_grid = np.repeat(grid, 3, axis=1)[mask]
+            grid = np.stack((grid_x, grid_y), axis=-1).reshape(1, ny, nx, 1, 2)
+            # Broadcast grid to match mask shape: (1, ny, nx, 3, 2)
+            v_grid = np.broadcast_to(grid, (1, ny, nx, 3, 2))[mask]
             
             # 6. Decode coordinates (xywh)
             v_xy = (v_pred[..., 0:2] * 2. - 0.5 + v_grid) * strides[i]
             
-            # Match anchors to the mask shape
-            anchors_tensor = np.array(anchors[i]).reshape(1, 3, 1, 1, 2)
-            v_anchors = np.tile(anchors_tensor, (1, 1, ny, nx, 1))[mask]
+            # Match anchors to mask shape: (1, 1, 1, 3, 2) -> (1, ny, nx, 3, 2)
+            anchors_tensor = np.array(anchors[i]).reshape(1, 1, 1, 3, 2)
+            v_anchors = np.broadcast_to(anchors_tensor, (1, ny, nx, 3, 2))[mask]
             v_wh = (v_pred[..., 2:4] * 2) ** 2 * v_anchors
 
             # 7. Calculate final scores and extract classes
@@ -220,7 +224,7 @@ def run_detection(model_id, dataset_id, thread_override):
     
     model_name_lower = m_cfg['name'].lower()
     model_path = f"{model_name_lower}_kria.xmodel"
-    dataset_path = "datasets/coco/" # Using the flat folder for demo
+    dataset_path = os.path.join("datasets", d_cfg['folder_name'])
     
     out_dir = f"outputs_{model_name_lower}"
     os.makedirs(out_dir, exist_ok=True)
@@ -270,7 +274,7 @@ def run_detection(model_id, dataset_id, thread_override):
 
         c_threads = []
         for i in range(num_consumers):
-            t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, out_dir, m_cfg, fix_pos_outs))
+            t = threading.Thread(target=consumer_worker, args=(i, img_queue, subgraph, out_dir, m_cfg, d_cfg, fix_pos_outs))
             t.start()
             c_threads.append(t)
 
