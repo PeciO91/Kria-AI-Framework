@@ -4,8 +4,8 @@ This repository provides a modular, automated pipeline for deploying PyTorch mod
 
 ## Development Status
 
-- **Classification:** Stable and hardware-verified.
-- **Object Detection:** [Work in Progress] Logic implemented; DPU-compatibility and post-processing verification ongoing.
+- **Classification:** Stable and hardware-verified (ResNet18/50, MobileNetV2/V3/V4, InceptionV3).
+- **Object Detection:** Stable and hardware-verified end-to-end with YOLOv5n on COCO (~21.8 FPS, 11.3 ms DPU latency on KV260, 2 threads).
 - **Semantic Segmentation:** [Work in Progress] Post-processing and masking scripts in development.
 - **Optimizer/Pruning:** [Work in Progress] Structural pruning supported; automated fine-tuning loops for accuracy recovery are under construction.
 
@@ -56,7 +56,7 @@ The pipeline is built on a "task-agnostic" core. A central configuration file ma
 Define your model metadata in `config/model_config.py` and dataset paths in `config/dataset_config.py`.
 
 ### 2. Full Deployment Chain
-From your Vitis AI 3.0 Docker container, run:
+From your Vitis AI 3.5 Docker container, run:
 
 ```bash
 python3 scripts/deploy.py --model resnet18 --dataset intel_images --subset 100
@@ -74,6 +74,31 @@ SSH into the Kria board and run:
 ```bash
 python3 run_inference.py --model resnet18 --dataset intel_images --threads 2
 ```
+
+---
+
+## Usage: Object Detection (Stable)
+
+### 1. Configuration
+The `coco_detection` dataset is registered in `dataset_config.py` with the 80 COCO class names. The YOLOv5n model is registered in `model_config.py` with input shape 640x640 and confidence/IOU thresholds.
+
+### 2. DPU Compatibility Notes
+YOLOv5 uses SiLU activations by default, which are not natively supported by the DPU. The model YAML (`models/yolov5n/models/yolov5n.yaml`) overrides the activation with `nn.LeakyReLU(26/256, inplace=True)` for full DPU compatibility. The `Detect` head is stripped to return raw conv outputs; anchor decoding and NMS run on the ARM CPU.
+
+### 3. Full Deployment Chain
+```bash
+python3 scripts/run_quantizer.py --model yolov5n --dataset coco_detection --quant_mode calib --subset_len 50
+python3 scripts/run_quantizer.py --model yolov5n --dataset coco_detection --quant_mode test
+python3 scripts/run_compiler.py --model yolov5n
+scp -O build/yolov5n/compiled/yolov5n_kria.xmodel root@<board-ip>:/home/root/
+```
+
+### 4. Board Execution
+```bash
+python3 run_detection.py --model yolov5n --dataset coco_detection --threads 2
+```
+
+Drawn images with bounding boxes and COCO class labels are saved to `outputs_yolov5n/`.
 
 ---
 
@@ -103,8 +128,8 @@ DPU Compute Eff.:   82.15 %
 
 ---
 
-## WIP Features and Technical Strategy
+## Technical Strategy
 
-* **YOLO Detection:** To ensure 100% DPU compatibility, the "Detect Head" is stripped during the Host-side phase. The detection logic (Anchors and NMS) is implemented in optimized NumPy/OpenCV code within `run_detection.py` to run on the Kria ARM CPU.
-* **Segmentation:** Implementing pixel-wise `argmax` logic that operates directly on raw INT8 DPU outputs to minimize CPU overhead.
-* **Structural Pruning:** The `run_optimizer.py` script leverages the Vitis AI Pruner to slim models. The current work focuses on integrating the retraining loop to recover accuracy loss post-pruning.
+* **YOLO Detection:** To ensure 100% DPU compatibility, the `Detect` head is stripped during the Host-side phase, returning the three raw P3/P4/P5 conv outputs. SiLU activations are replaced with DPU-friendly LeakyReLU(26/256). Anchor decoding, sigmoid post-processing, coordinate scaling, and NMS run on the Kria ARM CPU using optimized NumPy/OpenCV code in `run_detection.py`.
+* **Segmentation (WIP):** Implementing pixel-wise `argmax` logic that operates directly on raw INT8 DPU outputs to minimize CPU overhead.
+* **Structural Pruning (WIP):** The `run_optimizer.py` script leverages the Vitis AI Pruner to slim models. The current work focuses on integrating the retraining loop to recover accuracy loss post-pruning.
