@@ -1,12 +1,29 @@
-import numpy as np
-import cv2
-import vart
+"""
+Board-side YOLO object detection runner.
+
+Three-stage pipeline that decouples CPU-bound preprocessing, DPU inference,
+and disk I/O so each thread can run at its own rate:
+
+  Producers  -> letterbox, normalize, INT8 cast, push to img_queue
+  Consumers  -> DPU execute, decode YOLO grids, per-class NMS, draw,
+                push (path, image) to write_queue
+  Writer     -> single thread that flushes JPEG/PNG output
+
+Decoding is vectorized NumPy. The confidence threshold is applied in logit
+space so the sigmoid is only evaluated on surviving candidates, and per-level
+meshgrids and anchor tensors are cached in `DecoderCache` so the 80x80 grid
+is built exactly once per consumer instead of once per frame.
+"""
 import os
+import sys
 import time
 import threading
 import queue
 import argparse
-import sys
+
+import numpy as np
+import cv2
+import vart
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset

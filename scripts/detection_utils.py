@@ -1,10 +1,24 @@
+"""
+Detection-specific math helpers shared by the calibration loader and the
+on-board runner.
+
+  - letterbox:             aspect-preserving resize with constant padding.
+  - scale_coords:          map xyxy boxes from the letterboxed image space
+                           back to the original image.
+  - non_max_suppression:   thin wrapper over cv2.dnn.NMSBoxes with optional
+                           per-class suppression via the class-offset trick.
+"""
 import cv2
 import numpy as np
 
+
 def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
     """
-    Resize image to a 32-pixel-multiple rectangle, maintaining aspect ratio.
-    Pads the remaining space with a solid color.
+    Resize `img` into `new_shape` while preserving aspect ratio and padding
+    the remainder with a solid color.
+
+    Returns the padded image, the (rw, rh) scale ratios, and the (dw, dh)
+    padding applied to each side.
     """
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
@@ -35,8 +49,9 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
 
 def scale_coords(img1_shape, coords, img0_shape):
     """
-    Rescale coordinates (xyxy) from img1_shape (e.g. 640x640) 
-    back to img0_shape (original image size).
+    Rescale xyxy boxes from `img1_shape` (the letterboxed model input, e.g.
+    640x640) back to `img0_shape` (the original image), accounting for the
+    aspect-preserving padding inserted by `letterbox`.
     """
     # Calculate scale and padding
     gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new

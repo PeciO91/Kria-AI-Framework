@@ -1,4 +1,30 @@
-# Global selector for the active model
+"""
+Central registry of model definitions consumed by every stage of the
+pipeline (inspector, quantizer, compiler, board runners).
+
+Each entry describes:
+
+  - source         : 'torchvision' or 'custom' (loader strategy in model_utils).
+  - type           : 'classification', 'detection', or 'segmentation'.
+  - name           : Human-readable name; used to derive the build directory
+                     and the compiled xmodel filename.
+  - model_class    : Class or factory name to instantiate.
+  - model_path     : Path to .pt weights, relative to the project root.
+  - input_shape    : (H, W) input resolution.
+  - gops           : Approximate compute cost; used for compute-efficiency
+                     metrics in the analytical report.
+  - last_layer_name: Optional, classification only. Override of the final
+                     layer attribute name (default 'fc') when adapting class
+                     count.
+  - file_path,
+    yaml_path      : Custom-source loaders only. Locations of the model
+                     definition file and any required architecture YAML.
+
+Detection models additionally carry conf_threshold, iou_threshold, anchors
+and strides used by the on-board YOLO decoder.
+"""
+
+# Default model when no --model is passed.
 ACTIVE_MODEL_ID = "resnet18"
 
 MODELS = {
@@ -88,10 +114,8 @@ MODELS = {
 }
 
 def get_active_model(model_id=None):
-    """Returns configuration for the model, allowing CLI override."""
-    # Use the provided model_id, otherwise fall back to the global ACTIVE_MODEL_ID
+    """Return the configuration dict for `model_id`, falling back to ACTIVE_MODEL_ID."""
     target_id = model_id if model_id else ACTIVE_MODEL_ID
-    
     if target_id not in MODELS:
         available = ", ".join(MODELS.keys())
         raise ValueError(f"Model ID '{target_id}' not found. Available: {available}")

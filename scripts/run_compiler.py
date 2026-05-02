@@ -1,9 +1,16 @@
+"""
+Vitis AI compilation stage.
+
+Wraps the `vai_c_xir` command-line compiler. Reads the quantized xmodel
+produced by run_quantizer.py and emits a DPU-ready xmodel targeting the
+architecture defined in board_config.DPU_ARCH_PATH.
+"""
 import os
 import sys
 import subprocess
 import argparse
 
-# --- Path auto-fix ---
+# Project-root import path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
 if parent_dir not in sys.path:
@@ -12,25 +19,19 @@ if parent_dir not in sys.path:
 from model_config import get_active_model
 from board_config import DPU_ARCH_PATH
 
+
 def run_compiler(model_id):
-    # 1. Load configuration (FIXED: Now uses the passed model_id)
+    """Compile the quantized xmodel for the configured DPU architecture."""
     m_cfg = get_active_model(model_id)
     model_name = m_cfg['name'].lower()
-    
-    # 2. Define input/output paths
+
+    # Vitis AI's PyTorch quantizer names its output as <ModelClass>_int.xmodel.
     quant_dir = os.path.join("build", model_name, "quantize_result")
-    
-    # Vitis AI PyTorch quantizer always names the output this way:
-    expected_quant_name = f"{m_cfg['model_class']}_int.xmodel"
-    quant_model = os.path.join(quant_dir, expected_quant_name)
-            
+    quant_model = os.path.join(quant_dir, f"{m_cfg['model_class']}_int.xmodel")
+
     if not os.path.exists(quant_model):
-        print(f"Error: Quantized model NOT found at {quant_model}")
-        print(f"Check if Quantization Phase 2 (test mode) finished correctly.")
-        return
-            
-    if not quant_model:
-        print(f"Error: No quantized xmodel found in {quant_dir}.")
+        print(f"[ERROR] Quantized model not found: {quant_model}")
+        print(f"[HINT]  Ensure run_quantizer.py finished successfully in 'test' mode.")
         return
 
     output_dir = os.path.join("build", model_name, "compiled")
@@ -39,30 +40,27 @@ def run_compiler(model_id):
     print(f"=== Starting Compilation: {m_cfg['name']} ===")
     print(f"=== Target Architecture: {DPU_ARCH_PATH} ===")
 
-    # 3. Construct the Vitis AI Compiler command
     command = [
         "vai_c_xir",
         "--xmodel", quant_model,
         "--arch", DPU_ARCH_PATH,
         "--net_name", f"{model_name}_kria",
-        "--output_dir", output_dir
+        "--output_dir", output_dir,
     ]
-
     print(f"Executing: {' '.join(command)}")
 
-    # 4. Run the compilation process
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         print(result.stdout)
-        print(f"=== Compilation Successful! ===")
+        print(f"=== Compilation Successful ===")
         print(f"Final Model: {output_dir}/{model_name}_kria.xmodel")
     except subprocess.CalledProcessError as e:
-        print(f"ERROR: Compilation failed!\n{e.stderr}")
+        print(f"[ERROR] Compilation failed:\n{e.stderr}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, help='Model ID from model_config.py')
+    parser.add_argument('--model', type=str, required=True, help='Model ID from model_config.py')
     args = parser.parse_args()
 
-    # Pass the CLI argument INTO the function
     run_compiler(args.model)

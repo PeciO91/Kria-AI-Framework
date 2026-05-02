@@ -1,7 +1,24 @@
-# =============================================================
-# DATASET CONFIGURATION
-# =============================================================
-ACTIVE_DATASET_ID = "coco_detection"  # Default dataset; can be overridden via CLI
+"""
+Central registry of dataset definitions used by both the host-side
+calibration loaders and the board-side accuracy / labeling logic.
+
+Each entry contains:
+
+  - name          : Human-readable description used in the analytical report.
+  - folder_name   : Subdirectory under datasets/ on the board (or under
+                    data/ on the host) where the images live.
+  - calib_path    : Host-side path to the calibration set used by the
+                    quantizer.
+  - classes       : Ordered list of class names. Index = class id.
+                    Classification: defines train_data/<class>/ structure
+                    that run_inference.py walks. Detection: maps decoded
+                    class ids to human-readable labels for drawn output.
+  - normalization : Mean / std used for INT8 input normalization. YOLO
+                    models trained on 0..1 inputs use mean=0, std=1.
+"""
+
+# Default dataset when no --dataset is passed.
+ACTIVE_DATASET_ID = "coco_detection"
 
 DATASETS = {
     "intel_images": {
@@ -62,9 +79,8 @@ DATASETS = {
 
 
 def get_active_dataset(dataset_id=None):
-    """Returns configuration for the dataset, allowing CLI override."""
+    """Return the configuration dict for `dataset_id`, falling back to ACTIVE_DATASET_ID."""
     target_id = dataset_id if dataset_id else ACTIVE_DATASET_ID
-    
     if target_id not in DATASETS:
         available = ", ".join(DATASETS.keys())
         raise ValueError(f"Dataset ID '{target_id}' not found. Available: {available}")

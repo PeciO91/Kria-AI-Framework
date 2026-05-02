@@ -1,12 +1,22 @@
-import numpy as np
-import cv2
-import vart
+"""
+Board-side classification runner.
+
+Producer/consumer pipeline that resizes and INT8-normalizes every image on
+CPU and runs the classification xmodel on the DPU. Top-1 / Top-5 accuracy
+is computed against the directory-encoded ground truth (one folder per
+class). Power, energy-per-frame and DPU duty cycle are sampled in the
+background and emitted in the final analytical report.
+"""
 import os
+import sys
 import time
 import threading
 import queue
 import argparse
-import sys
+
+import numpy as np
+import cv2
+import vart
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset
