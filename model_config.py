@@ -66,7 +66,14 @@ MODELS = {
         "yaml_path": "models/yolov5n/models/yolov5n.yaml",  # Architecture config
         "gops": 4.5,                           # YOLOv5n is ~4.5 GOPs
         "conf_threshold": 0.25,
-        "iou_threshold": 0.45
+        "iou_threshold": 0.45,
+        # YOLOv5 anchors per detection level (P3, P4, P5)
+        "anchors": [
+            [[10, 13], [16, 30], [33, 23]],
+            [[30, 61], [62, 45], [59, 119]],
+            [[116, 90], [156, 198], [373, 326]]
+        ],
+        "strides": [8, 16, 32]
     },
     "unet_res18": {
         "source": "custom",

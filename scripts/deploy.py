@@ -90,6 +90,7 @@ def main():
             get_script_path("run_detection.py"),
             get_script_path("run_segmentation.py"),
             get_script_path("detection_utils.py"),
+            get_script_path("board_utils.py"),
             get_script_path("model_config.py"),
             get_script_path("dataset_config.py"),
             get_script_path("board_config.py")

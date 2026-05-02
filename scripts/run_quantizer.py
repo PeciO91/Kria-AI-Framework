@@ -20,16 +20,17 @@ from dataset_config import get_active_dataset
 from model_utils import prepare_model
 from detection_utils import letterbox
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, help='Model ID')
-parser.add_argument('--dataset', type=str, help='Dataset ID')
-parser.add_argument('--quant_mode', default='calib', choices=['calib', 'test'])
-parser.add_argument('--subset_len', default=100, type=int, help='Calib images')
-parser.add_argument('--batch_size', default=32, type=int)
-parser.add_argument('--fast_ft', action='store_true', help='Enable Fast Fine-Tuning')
-# LOOPHOLE FIX: Added threshold argument
-parser.add_argument('--prune_threshold', type=float, help='Threshold used for pruning')
-args = parser.parse_args()
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, help='Model ID')
+    parser.add_argument('--dataset', type=str, help='Dataset ID')
+    parser.add_argument('--quant_mode', default='calib', choices=['calib', 'test'])
+    parser.add_argument('--subset_len', default=100, type=int, help='Calib images')
+    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--fast_ft', action='store_true', help='Enable Fast Fine-Tuning')
+    parser.add_argument('--prune_threshold', type=float, help='Threshold used for pruning')
+    return parser.parse_args()
 
 class SimpleImageDataset(Dataset):
     """A generic dataset that loads images from a flat folder for calibration."""
@@ -84,7 +85,7 @@ def evaluate(model, loader, loss_fn):
             total_loss += loss.item()
     return total_loss
 
-def run_quantization():
+def run_quantization(args):
     m_cfg = get_active_model(args.model)
     d_cfg = get_active_dataset(args.dataset)
     
@@ -171,4 +172,4 @@ def run_quantization():
         print(f"[INFO] Export finished.")
 
 if __name__ == '__main__':
-    run_quantization()
+    run_quantization(parse_args())

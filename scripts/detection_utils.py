@@ -55,15 +55,35 @@ def scale_coords(img1_shape, coords, img0_shape):
     
     return coords
 
-def non_max_suppression(boxes, scores, conf_threshold, iou_threshold):
+def non_max_suppression(boxes, scores, conf_threshold, iou_threshold, class_ids=None,
+                        class_offset=4096):
     """
-    Wrapper for OpenCV's highly optimized NMS algorithm.
-    Returns the indices of the boxes to keep.
+    OpenCV NMS wrapper with optional per-class suppression.
+
+    boxes  : list of [x, y, w, h]
+    scores : list of float
+    class_ids : list of int, optional
+        When provided, applies the standard "class offset" trick: boxes from
+        different classes are shifted apart in coordinate space so they
+        cannot suppress each other. This matches YOLOv5's per-class NMS
+        semantics and works on every OpenCV version that exposes NMSBoxes.
+    class_offset : int
+        Per-class spatial offset; only needs to exceed the input image size.
+
+    Returns the indices of kept boxes (relative to the input lists).
     """
-    # cv2.dnn.NMSBoxes expects boxes in [x, y, width, height] format.
-    # We will convert xyxy to xywh for the OpenCV function inside our main script.
-    indices = cv2.dnn.NMSBoxes(boxes, scores, conf_threshold, iou_threshold)
-    
+    if len(boxes) == 0:
+        return []
+
+    if class_ids is None:
+        nms_boxes = boxes
+    else:
+        nms_boxes = [
+            [b[0] + cid * class_offset, b[1] + cid * class_offset, b[2], b[3]]
+            for b, cid in zip(boxes, class_ids)
+        ]
+
+    indices = cv2.dnn.NMSBoxes(nms_boxes, scores, conf_threshold, iou_threshold)
     if len(indices) > 0:
         return indices.flatten()
     return []
