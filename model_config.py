@@ -83,6 +83,7 @@ MODELS = {
     },
     "yolov5n": {
         "source": "custom",
+        "loader": "yolov5",
         "file_path": "models/yolov5n/models/yolo.py",  # YOLO model definition
         "type": "detection",
         "name": "YOLOv5n",
@@ -100,6 +101,30 @@ MODELS = {
             [[116, 90], [156, 198], [373, 326]]
         ],
         "strides": [8, 16, 32]
+    },
+    "yolov26s": {
+        "source": "custom",
+        "loader": "ultralytics",
+        "file_path": "scripts/ultralytics_vitis_wrapper.py",
+        "type": "detection",
+        "name": "YOLOv26s",
+        "model_class": "UltralyticsVitisDetect",
+        "input_shape": (640, 640),
+        "model_path": "models/yolo26s.pt",
+        "repo_path": "models/ultralytics-main",
+        "yaml_path": "configs/yolov26s_dpu.yaml",
+        "gops": 22.8,
+        "conf_threshold": 0.1,
+        "iou_threshold": 0.45,
+        "decoder": "ultralytics_anchor_free",
+        "num_classes": 80,
+        "reg_max": 1,
+        "head_variant": "one2one",
+        "end2end": True,
+        "max_det": 300,
+        "replace_leaky_relu": True,
+        "strides": [8, 16, 32],
+        "weights_loaded_by_wrapper": True
     },
     "unet_res18": {
         "source": "custom",

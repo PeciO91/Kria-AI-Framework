@@ -5,7 +5,9 @@ This repository provides a modular, automated pipeline for deploying PyTorch mod
 ## Development Status
 
 - **Classification:** Stable and hardware-verified (ResNet18/50, MobileNetV2/V3/V4, InceptionV3).
-- **Object Detection:** Stable and hardware-verified end-to-end with YOLOv5n on COCO (~21.8 FPS, 11.3 ms DPU latency on KV260, 2 threads).
+- **Object Detection:** Stable and hardware-verified end-to-end on COCO with two model families:
+  - **YOLOv5n** (anchor-based, 4.5 GOPs): ~21.8 FPS, 11.3 ms DPU latency on KV260, 2 threads.
+  - **YOLOv26s** (Ultralytics anchor-free, DFL-free, end2end one2one head, 22.8 GOPs): ~23 FPS, 40 ms DPU latency on KV260, 3 threads.
 - **Semantic Segmentation:** [Work in Progress] Post-processing and masking scripts in development.
 - **Optimizer/Pruning:** [Work in Progress] Structural pruning supported; automated fine-tuning loops for accuracy recovery are under construction.
 
@@ -80,25 +82,36 @@ python3 run_inference.py --model resnet18 --dataset intel_images --threads 2
 ## Usage: Object Detection (Stable)
 
 ### 1. Configuration
-The `coco_detection` dataset is registered in `dataset_config.py` with the 80 COCO class names. The YOLOv5n model is registered in `model_config.py` with input shape 640x640 and confidence/IOU thresholds.
+The `coco_detection` dataset is registered in `dataset_config.py` with the 80 COCO class names. Detection models in `model_config.py` declare their decoder family (`yolov5_anchor` or `ultralytics_anchor_free`), strides, conf/iou thresholds, and any model-specific flags (e.g. `end2end`, `reg_max`, `replace_leaky_relu`).
 
 ### 2. DPU Compatibility Notes
-YOLOv5 uses SiLU activations by default, which are not natively supported by the DPU. The model YAML (`models/yolov5n/models/yolov5n.yaml`) overrides the activation with `nn.LeakyReLU(26/256, inplace=True)` for full DPU compatibility. The `Detect` head is stripped to return raw conv outputs; anchor decoding and NMS run on the ARM CPU.
+
+**YOLOv5n:** Uses SiLU by default. The YAML (`models/yolov5n/models/yolov5n.yaml`) overrides the activation with `nn.LeakyReLU(26/256, inplace=True)` for DPU compatibility. The `Detect` head is stripped to return raw P3/P4/P5 conv outputs; anchor decoding and per-class NMS run on the ARM CPU.
+
+**YOLOv26s:** The stock checkpoint ships with `C2PSA`, `PSABlock`, and `Attention` modules whose `matmul / softmax / permute / reshape / strided_slice` ops are not DPU-supported and would cause large CPU-fallback subgraphs. We retrain from a DPU-friendly YAML (`configs/yolov26s_dpu.yaml`) that uses only `Conv`, `C3`, `SPPF`, `Concat`, `Upsample` and a vanilla `Detect` head. A thin wrapper (`scripts/ultralytics_vitis_wrapper.py`) loads the Ultralytics model, optionally rewrites any residual `LeakyReLU` modules into `ReLU` (needed because the DPU rejects `DepthwiseConv + LeakyReLU` fusions), and exposes only the `one2one` detection branch so no dead `one2many` weights end up in the compiled graph. The board decodes the anchor-free `(4·reg_max + nc)`-channel grids directly off the INT8 buffers; post-processing is top-k by score (no NMS, since the `one2one` head is trained with bipartite matching).
 
 ### 3. Full Deployment Chain
 ```bash
-python3 scripts/run_quantizer.py --model yolov5n --dataset coco_detection --quant_mode calib --subset_len 50
-python3 scripts/run_quantizer.py --model yolov5n --dataset coco_detection --quant_mode test
-python3 scripts/run_compiler.py --model yolov5n
+# YOLOv5n (anchor-based)
+python3 scripts/run_quantizer.py --model yolov5n  --dataset coco_detection --quant_mode calib --subset_len 50
+python3 scripts/run_quantizer.py --model yolov5n  --dataset coco_detection --quant_mode test
+python3 scripts/run_compiler.py  --model yolov5n
 scp -O build/yolov5n/compiled/yolov5n_kria.xmodel root@<board-ip>:/home/root/
+
+# YOLOv26s (Ultralytics anchor-free, end2end)
+python3 scripts/run_quantizer.py --model yolov26s --dataset coco_detection --quant_mode calib --subset_len 50
+python3 scripts/run_quantizer.py --model yolov26s --dataset coco_detection --quant_mode test
+python3 scripts/run_compiler.py  --model yolov26s
+scp -O build/yolov26s/compiled/yolov26s_kria.xmodel root@<board-ip>:/home/root/
 ```
 
 ### 4. Board Execution
 ```bash
-python3 run_detection.py --model yolov5n --dataset coco_detection --threads 2
+python3 run_detection.py --model yolov5n  --dataset coco_detection --threads 2
+python3 run_detection.py --model yolov26s --dataset coco_detection --threads 3
 ```
 
-Drawn images with bounding boxes and COCO class labels are saved to `outputs_yolov5n/`.
+Drawn images with bounding boxes and COCO class labels are saved to `outputs_<model>/`. A per-class detection histogram is printed at the end of each run.
 
 ---
 
@@ -130,6 +143,7 @@ DPU Compute Eff.:   82.15 %
 
 ## Technical Strategy
 
-* **YOLO Detection:** To ensure 100% DPU compatibility, the `Detect` head is stripped during the Host-side phase, returning the three raw P3/P4/P5 conv outputs. SiLU activations are replaced with DPU-friendly LeakyReLU(26/256). Anchor decoding, sigmoid post-processing, coordinate scaling, and NMS run on the Kria ARM CPU using optimized NumPy/OpenCV code in `run_detection.py`.
+* **YOLOv5n (anchor-based):** The `Detect` head is stripped during the Host-side phase, returning the three raw P3/P4/P5 conv outputs. SiLU activations are replaced with DPU-friendly `LeakyReLU(26/256)`. Anchor decoding, sigmoid post-processing, coordinate scaling, and per-class NMS run on the Kria ARM CPU using vectorized NumPy/OpenCV code in `run_detection.py`.
+* **YOLOv26s (anchor-free, end2end):** Retrained from a DPU-friendly architecture that excludes `C2PSA / PSABlock / Attention` modules. The wrapper exposes only the `one2one` detection branch and replaces any residual `LeakyReLU` with `ReLU` to avoid the unsupported `DepthwiseConv + LeakyReLU` DPU fusion. On-board decoding is lazy: the decoder finds the max class in INT8 space, thresholds in INT8, and only dequantizes surviving anchors to float32 (typical survivor rate at conf=0.1 is ~1%). Because the one2one head is trained with bipartite matching, NMS is skipped and final detections are selected via top-k by score.
 * **Segmentation (WIP):** Implementing pixel-wise `argmax` logic that operates directly on raw INT8 DPU outputs to minimize CPU overhead.
 * **Structural Pruning (WIP):** The `run_optimizer.py` script leverages the Vitis AI Pruner to slim models. The current work focuses on integrating the retraining loop to recover accuracy loss post-pruning.

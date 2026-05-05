@@ -55,28 +55,51 @@ def load_model_skeleton(m_cfg):
         raise ValueError(f"Unknown source: {source}. Use 'torchvision' or 'custom'.")
 
     file_path = m_cfg.get('file_path')
-    if not file_path or not os.path.exists(file_path):
-        raise FileNotFoundError(f"Custom model file not found at: {file_path}")
+    abs_file_path = os.path.join(project_root, file_path) if file_path and not os.path.isabs(file_path) else file_path
+    if not abs_file_path or not os.path.exists(abs_file_path):
+        raise FileNotFoundError(f"Custom model file not found at: {abs_file_path}")
+
+    if m_cfg.get('loader') == 'ultralytics':
+        repo_path = m_cfg.get('repo_path')
+        abs_repo_path = os.path.join(project_root, repo_path) if repo_path and not os.path.isabs(repo_path) else repo_path
+        weights_path = m_cfg.get('model_path')
+        abs_weights_path = os.path.join(project_root, weights_path) if weights_path and not os.path.isabs(weights_path) else weights_path
+        if not abs_repo_path or not os.path.exists(abs_repo_path):
+            raise FileNotFoundError(f"Ultralytics repo not found at: {abs_repo_path}")
+        if not abs_weights_path or not os.path.exists(abs_weights_path):
+            raise FileNotFoundError(f"Weight file not found: {abs_weights_path}")
+
+        module_name = os.path.basename(abs_file_path).replace(".py", "")
+        spec = importlib.util.spec_from_file_location(module_name, abs_file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return getattr(module, model_class)(
+            weights_path=abs_weights_path,
+            repo_root=abs_repo_path,
+            head_variant=m_cfg.get('head_variant', 'one2one'),
+            replace_leaky_relu=m_cfg.get('replace_leaky_relu', False),
+        )
 
     # YOLOv5 needs its package root on sys.path and a YAML config to instantiate.
-    if "yolo" in m_cfg['name'].lower():
+    if m_cfg.get('loader') == 'yolov5' or ("yolo" in m_cfg['name'].lower() and m_cfg.get('loader') is None):
         yolo_root = os.path.join(project_root, 'models', 'yolov5n')
         if yolo_root not in sys.path:
             sys.path.append(yolo_root)
 
         cfg_path = m_cfg.get('yaml_path',
                              os.path.join(yolo_root, 'models', 'yolov5n.yaml'))
+        cfg_path = os.path.join(project_root, cfg_path) if not os.path.isabs(cfg_path) else cfg_path
         if not os.path.exists(cfg_path):
             raise FileNotFoundError(f"YAML config not found at: {cfg_path}")
 
-        spec = importlib.util.spec_from_file_location("yolo", file_path)
+        spec = importlib.util.spec_from_file_location("yolo", abs_file_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return getattr(module, model_class)(cfg=cfg_path)
 
     # Generic custom loader (e.g. UNet).
-    module_name = os.path.basename(file_path).replace(".py", "")
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module_name = os.path.basename(abs_file_path).replace(".py", "")
+    spec = importlib.util.spec_from_file_location(module_name, abs_file_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return getattr(module, model_class)()
@@ -99,6 +122,11 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
 
     # 1. Architecture
     model = load_model_skeleton(m_cfg)
+
+    if m_cfg.get('weights_loaded_by_wrapper'):
+        model.to(device)
+        model.eval()
+        return model
 
     # 2. Last-layer adaptation for classification.
     if m_cfg.get('type') == 'classification':

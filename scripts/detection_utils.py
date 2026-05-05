@@ -101,7 +101,8 @@ def non_max_suppression(boxes, scores, conf_threshold, iou_threshold, class_ids=
         nms_boxes = boxes if isinstance(boxes, list) else np.asarray(boxes).tolist()
     else:
         # Vectorized class-offset shift (no Python loop).
-        boxes_arr = np.asarray(boxes, dtype=np.float32)
+        # IMPORTANT: copy so we never mutate the caller's boxes array.
+        boxes_arr = np.array(boxes, dtype=np.float32, copy=True)
         offsets = np.asarray(class_ids, dtype=np.float32) * float(class_offset)
         boxes_arr[:, 0] += offsets
         boxes_arr[:, 1] += offsets

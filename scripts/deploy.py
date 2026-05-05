@@ -40,6 +40,14 @@ def get_script_path(script_name):
     sys.exit(1)
 
 
+def get_project_file(file_name):
+    candidate = os.path.join(PROJECT_ROOT, file_name)
+    if os.path.exists(candidate):
+        return candidate
+    print(f"[ERROR] Could not find {file_name}")
+    sys.exit(1)
+
+
 def run_stage(command, stage_name):
     """Run a stage subprocess and return True on success."""
     print(f"\n{'='*70}\n >> STAGE: {stage_name}\n{'='*70}")
@@ -120,9 +128,9 @@ def main():
             get_script_path("run_segmentation.py"),
             get_script_path("detection_utils.py"),
             get_script_path("board_utils.py"),
-            get_script_path("model_config.py"),
-            get_script_path("dataset_config.py"),
-            get_script_path("board_config.py"),
+            get_project_file("model_config.py"),
+            get_project_file("dataset_config.py"),
+            get_project_file("board_config.py"),
         ]
         existing_files = [f for f in files_to_send if os.path.exists(f)]
 
@@ -137,8 +145,10 @@ def main():
         try:
             subprocess.run(transfer_cmd, check=True)
             print(f"\n[SUCCESS] Model and scripts transferred to {args.ip}")
+            runner = "run_detection.py" if m_cfg.get("type") == "detection" else "run_inference.py"
+            dataset_tip = f" --dataset {args.dataset}" if args.dataset else ""
             print(f"[TIP] Run on board: ssh {args.user}@{args.ip} "
-                  f"'python3 run_inference.py --model {args.model}'")
+                  f"'python3 {runner} --model {args.model}{dataset_tip}'")
         except subprocess.CalledProcessError:
             print(f"\n[ERROR] Transfer failed. Verify SSH keys or IP address.")
 

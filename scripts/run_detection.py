@@ -72,6 +72,21 @@ class DecoderCache:
         return g
 
 
+class UltralyticsDecoderCache:
+    def __init__(self, strides_cfg):
+        self.strides = strides_cfg
+        self._anchor_cache = {}
+
+    def anchors(self, level, ny, nx):
+        key = (level, ny, nx)
+        cached = self._anchor_cache.get(key)
+        if cached is None:
+            grid_y, grid_x = np.meshgrid(np.arange(ny), np.arange(nx), indexing='ij')
+            cached = np.stack((grid_x + 0.5, grid_y + 0.5), axis=-1).astype(np.float32)
+            self._anchor_cache[key] = cached.reshape(-1, 2)
+        return self._anchor_cache[key]
+
+
 # =============================================================
 # YOLO DECODER (lazy dequant + vectorized assembly)
 # =============================================================
@@ -160,6 +175,126 @@ def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
             np.concatenate(all_class_ids, axis=0))
 
 
+def _softmax_last(x):
+    x = x - np.max(x, axis=-1, keepdims=True)
+    exp_x = np.exp(x)
+    return exp_x / np.sum(exp_x, axis=-1, keepdims=True)
+
+
+def _as_nhwc(pred_int8, expected_channels):
+    if pred_int8.shape[-1] == expected_channels:
+        return pred_int8
+    if pred_int8.ndim == 4 and pred_int8.shape[1] == expected_channels:
+        return np.transpose(pred_int8, (0, 2, 3, 1))
+    return pred_int8
+
+
+def _output_spatial_rank(dims, expected_channels=None):
+    if expected_channels is not None and len(dims) == 4:
+        if dims[-1] == expected_channels:
+            return dims[1] * dims[2]
+        if dims[1] == expected_channels:
+            return dims[2] * dims[3]
+    return dims[1]
+
+
+def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
+                              cache, output_order, num_classes, reg_max):
+    """
+    Decode Ultralytics anchor-free outputs directly from INT8 buffers.
+
+    Lazy dequantization: the per-level tensor holds (4*reg_max + nc)
+    channels; we find the max class in INT8 space and threshold against
+    a pre-computed INT8 boundary. Only anchors surviving the threshold
+    are cast to float32, so for typical conf=0.1 only ~1% of cells
+    go through the float path (80x80 + 40x40 + 20x20 = 8400 anchors).
+    """
+    if conf_threshold <= 0.0:
+        logit_thresh = -np.inf
+    elif conf_threshold >= 1.0:
+        logit_thresh = np.inf
+    else:
+        logit_thresh = float(np.log(conf_threshold / (1.0 - conf_threshold)))
+
+    all_boxes = []
+    all_scores = []
+    all_class_ids = []
+    expected_channels = (4 * reg_max) + num_classes
+
+    for level, src_idx in enumerate(output_order):
+        pred_int8 = _as_nhwc(int8_outputs[src_idx], expected_channels)
+        bs, ny, nx, channels = pred_int8.shape
+        if channels != expected_channels:
+            continue
+
+        scale = dequant_scales[src_idx]
+
+        # 1. Threshold in INT8 space: avoid dequantizing every anchor.
+        #    logit > logit_thresh  <=>  int8 > ceil(logit_thresh / scale).
+        if np.isinf(logit_thresh):
+            int8_thresh = -129 if logit_thresh < 0 else 127
+        else:
+            int8_thresh = int(np.ceil(logit_thresh / scale))
+        int8_thresh = max(-129, min(127, int8_thresh))
+
+        pred_int8_2d = pred_int8.reshape(-1, channels)
+        cls_int8 = pred_int8_2d[:, 4 * reg_max:]
+        best_int8 = cls_int8.max(axis=1)
+        mask = best_int8 > int8_thresh
+        if not mask.any():
+            continue
+
+        # 2. Full dequant only for survivors.
+        survivors = pred_int8_2d[mask].astype(np.float32) * scale
+        cls_logits = survivors[:, 4 * reg_max:]
+
+        # 3. argmax on logits is equivalent to argmax on probs; compute
+        #    sigmoid only on the single best class per survivor (not 80).
+        cls_id = np.argmax(cls_logits, axis=1).astype(np.int32)
+        best_logits = np.take_along_axis(cls_logits, cls_id[:, None], axis=1).flatten()
+        scores = (1.0 / (1.0 + np.exp(-best_logits))).astype(np.float32)
+
+        box_raw = survivors[:, :4 * reg_max]
+        if reg_max > 1:
+            box_dist = (_softmax_last(box_raw.reshape(-1, 4, reg_max)) *
+                        np.arange(reg_max, dtype=np.float32)).sum(axis=-1)
+        else:
+            box_dist = box_raw.reshape(-1, 4)
+
+        # 4. Indexed anchor lookup. With bs=1 the mask length matches the
+        #    flat anchor grid (ny*nx) directly; no tile required.
+        base_anchors = cache.anchors(level, ny, nx)  # (ny*nx, 2)
+        if bs == 1:
+            anchors = base_anchors[mask]
+        else:
+            anchors = np.tile(base_anchors, (bs, 1))[mask]
+        stride = cache.strides[level]
+
+        x1 = (anchors[:, 0] - box_dist[:, 0]) * stride
+        y1 = (anchors[:, 1] - box_dist[:, 1]) * stride
+        x2 = (anchors[:, 0] + box_dist[:, 2]) * stride
+        y2 = (anchors[:, 1] + box_dist[:, 3]) * stride
+
+        level_boxes = np.empty((box_dist.shape[0], 4), dtype=np.float32)
+        level_boxes[:, 0] = x1
+        level_boxes[:, 1] = y1
+        level_boxes[:, 2] = x2 - x1
+        level_boxes[:, 3] = y2 - y1
+
+        all_boxes.append(level_boxes)
+        all_scores.append(scores)
+        all_class_ids.append(cls_id)
+
+    if not all_boxes:
+        return (np.empty((0, 4), dtype=np.float32),
+                np.empty(0, dtype=np.float32),
+                np.empty(0, dtype=np.int32))
+
+    return (np.concatenate(all_boxes, axis=0),
+            np.concatenate(all_scores, axis=0),
+            np.concatenate(all_class_ids, axis=0))
+
+
 # =============================================================
 # PRODUCER: letterbox + LUT normalization
 # =============================================================
@@ -207,13 +342,24 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
 
     conf_thresh = m_cfg.get('conf_threshold', 0.25)
     iou_thresh = m_cfg.get('iou_threshold', 0.45)
+    end2end = m_cfg.get('end2end', False)
+    max_det = m_cfg.get('max_det', 300)
     dpu_shape = tuple(runner.get_input_tensors()[0].dims)[1:3]  # H, W
 
-    cache = DecoderCache(m_cfg['anchors'], m_cfg['strides'])
+    decoder = m_cfg.get('decoder', 'yolov5_anchor')
+    if decoder == 'ultralytics_anchor_free':
+        cache = UltralyticsDecoderCache(m_cfg['strides'])
+        num_classes = m_cfg.get('num_classes', len(d_cfg.get('classes', [])))
+        reg_max = m_cfg.get('reg_max', 1)
+    else:
+        cache = DecoderCache(m_cfg['anchors'], m_cfg['strides'])
+        num_classes = None
+        reg_max = None
     class_names = d_cfg.get('classes')
 
     local_total = 0
     local_dpu_time = 0.0
+    local_class_hist = {}
 
     while True:
         item = input_queue.get()
@@ -230,13 +376,28 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
         local_dpu_time += time.perf_counter() - t_start
 
         # 2. Decode directly off the int8 buffers (lazy dequant).
-        boxes, scores, class_ids = decode_yolo_output(
-            output_data, dequant_scales, conf_thresh, cache, output_order)
+        if decoder == 'ultralytics_anchor_free':
+            boxes, scores, class_ids = decode_ultralytics_output(
+                output_data, dequant_scales, conf_thresh, cache, output_order,
+                num_classes, reg_max)
+        else:
+            boxes, scores, class_ids = decode_yolo_output(
+                output_data, dequant_scales, conf_thresh, cache, output_order)
 
-        # 3. Per-class NMS (operates on numpy arrays directly).
+        # 3. Post-process: end2end models (one2one head) use top-k
+        #    selection instead of NMS because the model was trained with
+        #    bipartite matching to produce duplicate-free predictions.
         if boxes.shape[0] > 0:
-            indices = non_max_suppression(
-                boxes, scores, conf_thresh, iou_thresh, class_ids=class_ids)
+            if end2end:
+                # Top-k by score, already filtered by conf_threshold in
+                # the decoder logit space.
+                if scores.shape[0] > max_det:
+                    indices = np.argpartition(-scores, max_det)[:max_det]
+                else:
+                    indices = np.arange(scores.shape[0])
+            else:
+                indices = non_max_suppression(
+                    boxes, scores, conf_thresh, iou_thresh, class_ids=class_ids)
             if len(indices) > 0:
                 final_boxes = boxes[indices]
                 final_class_ids = class_ids[indices]
@@ -252,6 +413,7 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
                     x1, y1, x2, y2 = map(int, xyxy[j, :4])
                     cid = int(final_class_ids[j])
                     conf = float(final_scores[j])
+                    local_class_hist[cid] = local_class_hist.get(cid, 0) + 1
                     cv2.rectangle(orig_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     name = class_names[cid] if class_names and cid < len(class_names) else f"Class {cid}"
                     cv2.putText(orig_img, f"{name}: {conf:.2f}",
@@ -265,7 +427,7 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
         progress.increment()
         input_queue.task_done()
 
-    results[thread_id] = (local_total, local_dpu_time)
+    results[thread_id] = (local_total, local_dpu_time, local_class_hist)
     del runner
 
 
@@ -280,9 +442,15 @@ def run_detection(model_id, dataset_id, thread_override):
         print(f"[ERROR] Model {model_id} is a {m_cfg['type']} model. "
               f"Use run_inference.py instead.")
         sys.exit(1)
-    if 'anchors' not in m_cfg or 'strides' not in m_cfg:
-        print(f"[ERROR] Model {model_id} is missing 'anchors' / 'strides' in model_config.py.")
-        sys.exit(1)
+    decoder = m_cfg.get('decoder', 'yolov5_anchor')
+    if decoder == 'ultralytics_anchor_free':
+        if 'strides' not in m_cfg:
+            print(f"[ERROR] Model {model_id} is missing 'strides' in model_config.py.")
+            sys.exit(1)
+    else:
+        if 'anchors' not in m_cfg or 'strides' not in m_cfg:
+            print(f"[ERROR] Model {model_id} is missing 'anchors' / 'strides' in model_config.py.")
+            sys.exit(1)
 
     # Defaults: 3 consumers (KV260 supports up to 4) + 4 producers to keep
     # them fed now that LUT normalization removes the producer bottleneck.
@@ -311,7 +479,14 @@ def run_detection(model_id, dataset_id, thread_override):
     runner_tmp = vart.Runner.create_runner(subgraph, "run")
     out_dims = [tuple(t.dims) for t in runner_tmp.get_output_tensors()]
     del runner_tmp
-    output_order = sorted(range(len(out_dims)), key=lambda i: out_dims[i][1], reverse=True)
+    decoder = m_cfg.get('decoder', 'yolov5_anchor')
+    expected_channels = None
+    if decoder == 'ultralytics_anchor_free':
+        expected_channels = (4 * m_cfg.get('reg_max', 1)) + m_cfg.get('num_classes', len(d_cfg.get('classes', [])))
+    output_order = sorted(
+        range(len(out_dims)),
+        key=lambda i: _output_spatial_rank(out_dims[i], expected_channels),
+        reverse=True)
 
     all_images = [os.path.join(dataset_path, f)
                   for f in os.listdir(dataset_path)
@@ -385,6 +560,13 @@ def run_detection(model_id, dataset_id, thread_override):
     total_images = sum(r[0] for r in results if r)
     total_dpu_time = sum(r[1] for r in results if r)
 
+    # Aggregate per-class detection histogram across consumer threads.
+    class_hist = {}
+    for r in results:
+        if r and len(r) > 2:
+            for cid, count in r[2].items():
+                class_hist[cid] = class_hist.get(cid, 0) + count
+
     fps_app = total_images / total_wall_time if total_wall_time > 0 else 0.0
     avg_dpu_latency = total_dpu_time / total_images if total_images > 0 else 0.0
 
@@ -411,6 +593,18 @@ def run_detection(model_id, dataset_id, thread_override):
         ],
     )
     print("\n" + report)
+
+    # Print per-class detection histogram (top 20 classes by count).
+    if class_hist:
+        class_names_list = d_cfg.get('classes', [])
+        total_dets = sum(class_hist.values())
+        print(f"\nDETECTION CLASS HISTOGRAM (total {total_dets} detections):")
+        print("-" * 60)
+        sorted_items = sorted(class_hist.items(), key=lambda x: -x[1])[:20]
+        for cid, count in sorted_items:
+            name = class_names_list[cid] if cid < len(class_names_list) else f"Class {cid}"
+            print(f"    {name:<20s} {count:6d}  ({100*count/total_dets:.2f}%)")
+        print()
 
     with open(f"results_{model_id}_t{num_consumers}.txt", "w") as f:
         f.write(report)
