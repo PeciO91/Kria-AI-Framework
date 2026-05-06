@@ -23,18 +23,20 @@ from board_config import DPU_ARCH_PATH
 def run_compiler(model_id):
     """Compile the quantized xmodel for the configured DPU architecture."""
     m_cfg = get_active_model(model_id)
-    model_name = m_cfg['name'].lower()
+    # Build directory keeps the human-readable name; xmodel filenames use
+    # the canonical model_id so board runners can locate them.
+    build_dir_name = m_cfg['name'].lower()
 
-    # Vitis AI's PyTorch quantizer names its output as <ModelClass>_int.xmodel.
-    quant_dir = os.path.join("build", model_name, "quantize_result")
-    quant_model = os.path.join(quant_dir, f"{m_cfg['model_class']}_int.xmodel")
+    # Quantized xmodel is named as <model_id>_int.xmodel (set by run_quantizer.py).
+    quant_dir = os.path.join("build", build_dir_name, "quantize_result")
+    quant_model = os.path.join(quant_dir, f"{model_id}_int.xmodel")
 
     if not os.path.exists(quant_model):
         print(f"[ERROR] Quantized model not found: {quant_model}")
         print(f"[HINT]  Ensure run_quantizer.py finished successfully in 'test' mode.")
         return
 
-    output_dir = os.path.join("build", model_name, "compiled")
+    output_dir = os.path.join("build", build_dir_name, "compiled")
     os.makedirs(output_dir, exist_ok=True)
 
     print(f"=== Starting Compilation: {m_cfg['name']} ===")
@@ -44,7 +46,7 @@ def run_compiler(model_id):
         "vai_c_xir",
         "--xmodel", quant_model,
         "--arch", DPU_ARCH_PATH,
-        "--net_name", f"{model_name}_kria",
+        "--net_name", f"{model_id}_kria",
         "--output_dir", output_dir,
     ]
     print(f"Executing: {' '.join(command)}")
@@ -53,7 +55,7 @@ def run_compiler(model_id):
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         print(result.stdout)
         print(f"=== Compilation Successful ===")
-        print(f"Final Model: {output_dir}/{model_name}_kria.xmodel")
+        print(f"Final Model: {output_dir}/{model_id}_kria.xmodel")
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Compilation failed:\n{e.stderr}")
 

@@ -452,9 +452,10 @@ def run_detection(model_id, dataset_id, thread_override):
             print(f"[ERROR] Model {model_id} is missing 'anchors' / 'strides' in model_config.py.")
             sys.exit(1)
 
-    # Defaults: 3 consumers (KV260 supports up to 4) + 4 producers to keep
-    # them fed now that LUT normalization removes the producer bottleneck.
-    num_consumers = thread_override if thread_override else max(ACTIVE_THREADS, 3)
+    # Consumer count comes from board_config.ACTIVE_THREADS (KV260 supports
+    # up to 4 concurrent DPU runners). 4 producers keep them fed now that
+    # LUT normalization removes the producer bottleneck.
+    num_consumers = thread_override if thread_override else ACTIVE_THREADS
     num_producers = 4
 
     model_path = f"{model_id}_kria.xmodel"

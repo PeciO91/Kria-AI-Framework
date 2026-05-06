@@ -127,9 +127,10 @@ def run_segmentation(model_id, dataset_id, thread_override):
               f"Use run_inference.py or run_detection.py instead.")
         sys.exit(1)
 
-    # Default to 3 consumers (KV260 supports up to 4) + 4 producers; LUT
-    # normalization keeps the producers ahead of the DPU.
-    num_consumers = thread_override if thread_override else max(ACTIVE_THREADS, 3)
+    # Consumer count comes from board_config.ACTIVE_THREADS (KV260 supports
+    # up to 4 concurrent DPU runners). 4 producers keep the DPU saturated
+    # since LUT normalization removes the producer bottleneck.
+    num_consumers = thread_override if thread_override else ACTIVE_THREADS
     num_producers = 4
 
     model_path = f"{model_id}_kria.xmodel"

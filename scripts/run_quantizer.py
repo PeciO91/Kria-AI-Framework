@@ -18,6 +18,7 @@ to a flat-folder loader.
 import os
 import sys
 import argparse
+import random
 
 import torch
 import torchvision.transforms as transforms
@@ -42,15 +43,15 @@ from detection_utils import letterbox
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, required=True, help='Model ID')
-    parser.add_argument('--dataset', type=str, required=True, help='Dataset ID')
+    parser.add_argument('--dataset', type=str,
+                        help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
+                             'in dataset_config.py when omitted.')
     parser.add_argument('--quant_mode', default='calib', choices=['calib', 'test'])
     parser.add_argument('--subset_len', default=100, type=int,
                         help='Number of calibration images')
     parser.add_argument('--batch_size', default=32, type=int)
     parser.add_argument('--fast_ft', action='store_true',
                         help='Enable AdaQuant fast fine-tuning')
-    parser.add_argument('--prune_threshold', type=float,
-                        help='Pruning ratio if a pruned weights file should be loaded')
     return parser.parse_args()
 
 
@@ -123,7 +124,7 @@ def evaluate(model, loader, loss_fn):
 # =============================================================
 def run_quantization(args):
     m_cfg = get_active_model(args.model)
-    d_cfg = get_active_dataset(args.dataset)
+    d_cfg = get_active_dataset(args.dataset)  # None falls back to ACTIVE_DATASET_ID
 
     actual_subset_len = 1 if args.quant_mode == 'test' else args.subset_len
     output_dir = os.path.join("build", m_cfg['name'].lower(), "quantize_result")
@@ -134,7 +135,7 @@ def run_quantization(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
 
-    model = prepare_model(m_cfg, d_cfg, device, prune_threshold=args.prune_threshold)
+    model = prepare_model(m_cfg, d_cfg, device)
 
     # Build the calibration loader matching the model's task type.
     curr_batch_size = 1 if args.quant_mode == 'test' else args.batch_size
@@ -148,6 +149,13 @@ def run_quantization(args):
     task_type = m_cfg.get('type')
     if task_type == 'classification':
         dataset = ImageFolder(root=d_cfg['calib_path'], transform=base_transform)
+        # Limit to actual_subset_len with random sampling to avoid bias from
+        # alphabetical ordering (ImageFolder sorts classes by name).
+        if len(dataset) > actual_subset_len:
+            from torch.utils.data import Subset
+            random.seed(42)  # Fixed seed for reproducibility
+            indices = random.sample(range(len(dataset)), actual_subset_len)
+            dataset = Subset(dataset, indices)
     elif task_type == 'detection':
         print("[INFO] Using YOLO Letterbox loader for detection calibration.")
         # Letterbox handles the resize; only ToTensor + Normalize remain.
@@ -161,9 +169,21 @@ def run_quantization(args):
             input_shape=m_cfg['input_shape'],
             transform=yolo_transform,
         )
+        # Random sampling for detection calibration as well.
+        if len(dataset) > actual_subset_len:
+            from torch.utils.data import Subset
+            random.seed(42)
+            indices = random.sample(range(len(dataset)), actual_subset_len)
+            dataset = Subset(dataset, indices)
     else:
         print(f"[INFO] Using flat-folder image loader for {task_type} task.")
         dataset = SimpleImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
+        # Random sampling for other task types as well.
+        if len(dataset) > actual_subset_len:
+            from torch.utils.data import Subset
+            random.seed(42)
+            indices = random.sample(range(len(dataset)), actual_subset_len)
+            dataset = Subset(dataset, indices)
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False)
     input_h, input_w = m_cfg['input_shape']
@@ -206,6 +226,25 @@ def run_quantization(args):
         quantizer.export_quant_config()
     else:
         quantizer.export_xmodel(deploy_check=False, output_dir=output_dir)
+        # Rename xmodel from <ActualClass>_int.xmodel to <model_id>_int.xmodel.
+        # We use args.model (the canonical model_id from model_config) rather
+        # than m_cfg['name'].lower() so the filename matches what board-side
+        # runners look for. The Python class name is only meaningful to the
+        # Vitis AI quantizer and must be stripped here.
+        actual_class_name = model.__class__.__name__
+        old_name = f"{actual_class_name}_int.xmodel"
+        new_name = f"{args.model}_int.xmodel"
+        old_path = os.path.join(output_dir, old_name)
+        new_path = os.path.join(output_dir, new_name)
+        if os.path.exists(old_path):
+            os.rename(old_path, new_path)
+            print(f"[INFO] Renamed xmodel from {old_name} to {new_name}")
+        else:
+            print(f"[WARNING] Expected file {old_path} not found, checking for existing xmodel files...")
+            # List all xmodel files in the directory for debugging
+            for f in os.listdir(output_dir):
+                if f.endswith('.xmodel'):
+                    print(f"[INFO] Found xmodel: {f}")
         print("[INFO] Export finished.")
 
 

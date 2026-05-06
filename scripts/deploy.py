@@ -64,6 +64,13 @@ def main():
     parser.add_argument('--model', type=str, required=True, help='Model ID')
     parser.add_argument('--dataset', type=str, help='Dataset ID')
     parser.add_argument('--prune', type=float, help='Pruning ratio')
+    parser.add_argument('--method', choices=['iterative', 'onestep'], default='iterative',
+                        help='Pruning algorithm (passed to run_optimizer.py). '
+                             'iterative=sensitivity analysis (default); '
+                             'onestep=EagleEye subnet search.')
+    parser.add_argument('--num_subnet', type=int, default=200,
+                        help='Subnet candidates for --method onestep (ignored otherwise)')
+    parser.add_argument('--ft_epochs', type=int, default=5, help='Fine-tuning epochs for optimizer')
     parser.add_argument('--fast_ft', action='store_true', help='Enable AdaQuant Fast Fine-Tuning')
     parser.add_argument('--subset', type=int, default=200, help='Calibration subset length')
     parser.add_argument('--skip_inspect', action='store_true', help='Skip the inspection stage')
@@ -74,29 +81,34 @@ def main():
     pipeline_start = time.time()
 
     m_cfg = get_active_model(args.model)
-    folder_name = m_cfg['name'].lower()
+    # Build directory uses human-readable name; xmodel filename uses
+    # the canonical model_id so it matches what board runners look for.
+    build_dir_name = m_cfg['name'].lower()
 
     dataset_arg = ["--dataset", args.dataset] if args.dataset else []
-    prune_arg = ["--prune_threshold", str(args.prune)] if args.prune else []
 
     # 1. Inspection
     if not args.skip_inspect:
         if not run_stage(
             [sys.executable, get_script_path("run_inspector.py"), "--model", args.model]
-            + dataset_arg + prune_arg, "Inspection"):
+            + dataset_arg, "Inspection"):
             return
 
     # 2. Optimization (pruning) - optional
     if args.prune:
+        opt_extra = ["--method", args.method, "--subset_len", str(args.subset)]
+        if args.method == 'onestep':
+            opt_extra += ["--num_subnet", str(args.num_subnet)]
         if not run_stage(
             [sys.executable, get_script_path("run_optimizer.py"), "--model", args.model,
-             "--ratio", str(args.prune)], "Optimizer"):
+             "--ratio", str(args.prune), "--epochs", str(args.ft_epochs)]
+            + dataset_arg + opt_extra, "Optimizer"):
             return
 
     # 3. Quantization (calibration phase)
     target_q = get_script_path("run_quantizer.py")
     cmd_q = [sys.executable, target_q, "--model", args.model,
-             "--quant_mode", "calib", "--subset_len", str(args.subset)] + dataset_arg + prune_arg
+             "--quant_mode", "calib", "--subset_len", str(args.subset)] + dataset_arg
     if args.fast_ft:
         cmd_q.append("--fast_ft")
     if not run_stage(cmd_q, "Quantization: Phase 1"):
@@ -115,8 +127,8 @@ def main():
 
     # 6. Transfer to Kria board (xmodel + all board-side scripts)
     if args.ip:
-        local_model = os.path.join(PROJECT_ROOT, "build", folder_name, "compiled",
-                                   f"{folder_name}_kria.xmodel")
+        local_model = os.path.join(PROJECT_ROOT, "build", build_dir_name, "compiled",
+                                   f"{args.model}_kria.xmodel")
         remote_dest = f"{args.user}@{args.ip}:/home/{args.user}/"
 
         print(f"\n{'='*70}\n >> STAGE: Transfer to Kria (Full Package)\n{'='*70}")

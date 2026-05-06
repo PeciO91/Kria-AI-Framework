@@ -25,8 +25,15 @@ from board_config import DPU_FINGERPRINT
 from model_utils import prepare_model
 
 
-def run_model_inspector(model_id, dataset_id, prune_threshold):
-    """Build the model and run the Vitis AI Inspector against the target DPU."""
+def run_model_inspector(model_id, dataset_id):
+    """Build the model and run the Vitis AI Inspector against the target DPU.
+
+    Note: We always inspect the original (non-pruned) architecture. The
+    Inspector verifies operator-level DPU compatibility, which depends on
+    the topology of the network, not on channel counts. Inspecting the
+    Vitis AI pruning wrapper would also fail because its internal graph
+    forbids deepcopy (which the Inspector uses internally).
+    """
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
 
@@ -38,7 +45,8 @@ def run_model_inspector(model_id, dataset_id, prune_threshold):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
 
-    model = prepare_model(m_cfg, d_cfg, device, prune_threshold=prune_threshold)
+    # Always inspect the original architecture (prune_threshold=None).
+    model = prepare_model(m_cfg, d_cfg, device, prune_threshold=None)
 
     inspector = Inspector(DPU_FINGERPRINT)
     input_h, input_w = m_cfg['input_shape']
@@ -53,7 +61,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', type=str, required=True, help='Model ID')
     parser.add_argument('--dataset', type=str, help='Dataset ID')
-    parser.add_argument('--prune_threshold', type=float, help='Pruning ratio if a pruned weights file should be loaded')
     args = parser.parse_args()
 
-    run_model_inspector(args.model, args.dataset, args.prune_threshold)
+    run_model_inspector(args.model, args.dataset)

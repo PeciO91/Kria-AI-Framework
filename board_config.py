@@ -39,7 +39,10 @@ DPU_ARCH_PATH = "/opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json"
 DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000
 
 # KV260 supports up to 4 concurrent DPU runners.
+# Validate that ACTIVE_THREADS is within hardware limits.
 ACTIVE_THREADS = 2
+if not (1 <= ACTIVE_THREADS <= 4):
+    raise ValueError(f"ACTIVE_THREADS must be between 1 and 4 for KV260. Got: {ACTIVE_THREADS}")
 
 
 # ----- Transfer target -----

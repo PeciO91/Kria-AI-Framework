@@ -94,9 +94,10 @@ def run_inference(model_id, dataset_id, thread_override):
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
 
-    # Default to 3 consumers (KV260 supports up to 4) + 4 producers; LUT
-    # normalization keeps the producers ahead of the DPU.
-    num_consumers = thread_override if thread_override else max(ACTIVE_THREADS, 3)
+    # Consumer count comes from board_config.ACTIVE_THREADS (KV260 supports
+    # up to 4 concurrent DPU runners). 4 producers feed the DPU since LUT
+    # normalization keeps them ahead of inference.
+    num_consumers = thread_override if thread_override else ACTIVE_THREADS
     num_producers = 4
 
     model_path = f"{model_id}_kria.xmodel"
