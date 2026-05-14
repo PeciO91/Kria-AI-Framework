@@ -114,8 +114,11 @@ def run_inference(model_id, dataset_id, thread_override):
         print(f"[ERROR] Failed to load model {model_path}: {e}")
         return
 
+    # Class names priority: model_config > dataset_config
+    class_names = m_cfg.get('classes', d_cfg.get('classes', []))
+
     all_images = []
-    for c_idx, c_name in enumerate(d_cfg['classes']):
+    for c_idx, c_name in enumerate(class_names):
         c_dir = os.path.join(dataset_path, c_name)
         if not os.path.isdir(c_dir):
             continue

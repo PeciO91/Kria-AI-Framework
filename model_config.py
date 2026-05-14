@@ -5,6 +5,7 @@ pipeline (inspector, quantizer, compiler, board runners).
 Each entry describes:
 
   - source         : 'torchvision' or 'custom' (loader strategy in model_utils).
+  - loader         : Optional custom loader name ('yolo' or 'ultralytics').
   - type           : 'classification', 'detection', or 'segmentation'.
   - name           : Human-readable name; used to derive the build directory
                      and the compiled xmodel filename.
@@ -16,9 +17,10 @@ Each entry describes:
   - last_layer_name: Optional, classification only. Override of the final
                      layer attribute name (default 'fc') when adapting class
                      count.
-  - file_path,
-    yaml_path      : Custom-source loaders only. Locations of the model
-                     definition file and any required architecture YAML.
+  - file_path      : Generic custom-source loaders only. Location of the model
+                     definition file.
+  - repo_path      : Local repository path for repo-backed loaders.
+  - yaml_path      : Optional architecture YAML for YOLO-style loaders.
 
 Detection models additionally carry conf_threshold, iou_threshold, anchors
 and strides used by the on-board YOLO decoder.
@@ -38,6 +40,7 @@ MODELS = {
         "gops": 3.64
     },
     "resnet50": {
+        "source": "torchvision",
         "type": "classification",
         "name": "ResNet50",
         "model_path": "models/resnet50.pt",
@@ -46,6 +49,7 @@ MODELS = {
         "gops": 7.71
     },
     "mobilenet_v2": {
+        "source": "torchvision",
         "type": "classification",
         "name": "MobileNetV2",
         "model_class": "mobilenet_v2",
@@ -55,6 +59,7 @@ MODELS = {
         "gops": 0.44
     },
     "mobilenet_v3": {
+        "source": "torchvision",
         "type": "classification",
         "name": "MobileNetV3-Large",
         "model_class": "mobilenet_v3",
@@ -74,6 +79,7 @@ MODELS = {
         "gops": 3.8 # Approximate for the Large version
     },
     "inception_v3": {
+        "source": "torchvision",
         "type": "classification",
         "name": "InceptionV3",
         "model_class": "inception_v3",
@@ -83,13 +89,12 @@ MODELS = {
     },
     "yolov5n": {
         "source": "custom",
-        "loader": "yolov5",
-        "file_path": "models/yolov5n/models/yolo.py",  # YOLO model definition
+        "loader": "yolo",
         "type": "detection",
         "name": "YOLOv5n",
-        "model_class": "DetectionModel",
         "input_shape": (640, 640),
         "model_path": "models/yolov5n/yolov5n.pt",     # YOLOv5n weights
+        "repo_path": "models/yolov5n",
         "yaml_path": "models/yolov5n/models/yolov5n.yaml",  # Architecture config
         "gops": 4.5,                           # YOLOv5n is ~4.5 GOPs
         "conf_threshold": 0.25,
@@ -105,10 +110,8 @@ MODELS = {
     "yolov26s": {
         "source": "custom",
         "loader": "ultralytics",
-        "file_path": "scripts/ultralytics_vitis_wrapper.py",
         "type": "detection",
         "name": "YOLOv26s",
-        "model_class": "UltralyticsVitisDetect",
         "input_shape": (640, 640),
         "model_path": "models/yolo26s.pt",
         "repo_path": "models/ultralytics-main",
@@ -119,12 +122,9 @@ MODELS = {
         "decoder": "ultralytics_anchor_free",
         "num_classes": 80,
         "reg_max": 1,
-        "head_variant": "one2one",
         "end2end": True,
         "max_det": 300,
-        "replace_leaky_relu": True,
-        "strides": [8, 16, 32],
-        "weights_loaded_by_wrapper": True
+        "strides": [8, 16, 32]
     },
     "unet_res18": {
         "source": "custom",
