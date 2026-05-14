@@ -69,6 +69,111 @@ class ProgressCounter:
             return self._count
 
 
+class StageProfiler:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self._samples = {}
+
+    def add(self, stage, elapsed):
+        if not self.enabled:
+            return
+        self._samples.setdefault(stage, []).append(float(elapsed))
+
+    def time(self, stage):
+        return _StageTimer(self, stage)
+
+    def merge(self, other):
+        if not self.enabled or other is None:
+            return
+        for stage, values in other._samples.items():
+            self._samples.setdefault(stage, []).extend(values)
+
+    def summary(self, wall_time=None):
+        rows = []
+        for stage, values in self._samples.items():
+            if not values:
+                continue
+            arr = np.asarray(values, dtype=np.float64)
+            total = float(arr.sum())
+            row = {
+                "stage": stage,
+                "count": int(arr.size),
+                "total_s": total,
+                "avg_ms": float(arr.mean() * 1000.0),
+                "p50_ms": float(np.percentile(arr, 50) * 1000.0),
+                "p95_ms": float(np.percentile(arr, 95) * 1000.0),
+                "min_ms": float(arr.min() * 1000.0),
+                "max_ms": float(arr.max() * 1000.0),
+            }
+            if wall_time and wall_time > 0:
+                row["wall_pct"] = float((total / wall_time) * 100.0)
+            else:
+                row["wall_pct"] = 0.0
+            rows.append(row)
+        return rows
+
+
+class _StageTimer:
+    def __init__(self, profiler, stage):
+        self.profiler = profiler
+        self.stage = stage
+        self.start = None
+
+    def __enter__(self):
+        if self.profiler.enabled:
+            self.start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self.profiler.enabled and self.start is not None:
+            self.profiler.add(self.stage, time.perf_counter() - self.start)
+        return False
+
+
+def merge_stage_profilers(profilers):
+    merged = StageProfiler(enabled=True)
+    for profiler in profilers:
+        if profiler is not None:
+            merged.merge(profiler)
+    return merged
+
+
+def format_profile_report(title, profiler, wall_time, groups):
+    summary = {row["stage"]: row for row in profiler.summary(wall_time)}
+    lines = []
+    lines.append("=" * 96)
+    lines.append(f"  {title}")
+    lines.append("=" * 96)
+    lines.append("Times are accumulated across threads; Wall % can exceed 100% for parallel stages.")
+    header = (
+        f"{'Stage':<34}{'Count':>8}{'Avg ms':>10}{'P50 ms':>10}"
+        f"{'P95 ms':>10}{'Max ms':>10}{'Total s':>10}{'Wall %':>9}"
+    )
+    lines.append(header)
+    lines.append("-" * 96)
+
+    for group_name, stages in groups:
+        emitted = False
+        group_lines = []
+        for stage in stages:
+            row = summary.get(stage)
+            if row is None:
+                continue
+            emitted = True
+            group_lines.append(
+                f"{stage:<34}{row['count']:>8d}{row['avg_ms']:>10.2f}"
+                f"{row['p50_ms']:>10.2f}{row['p95_ms']:>10.2f}"
+                f"{row['max_ms']:>10.2f}{row['total_s']:>10.3f}"
+                f"{row['wall_pct']:>9.1f}"
+            )
+        if emitted:
+            lines.append(f"[{group_name}]")
+            lines.extend(group_lines)
+
+    lines.append("=" * 96)
+    return "\n".join(lines) + "\n"
+
+
 # =============================================================
 # DPU SETUP
 # =============================================================
@@ -157,6 +262,9 @@ def apply_norm_lut(img_uint8, lut):
     which is portable across OpenCV versions and ~10x faster than the
     explicit float multiply on ARM.
     """
+    if (np.array_equal(lut[:, 0], lut[:, 1]) and
+            np.array_equal(lut[:, 0], lut[:, 2])):
+        return np.take(lut[:, 0], img_uint8)
     return lut[img_uint8, _CHANNEL_INDEX_3]
 
 

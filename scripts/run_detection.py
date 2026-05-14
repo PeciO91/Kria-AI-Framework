@@ -30,6 +30,7 @@ import time
 import threading
 import queue
 import argparse
+import json
 
 import numpy as np
 import cv2
@@ -41,8 +42,85 @@ from board_config import ACTIVE_THREADS, DPU_PEAK_GOPS, get_power_mw
 from board_utils import (
     PowerMonitor, ProgressCounter, setup_dpu,
     build_norm_lut, apply_norm_lut, format_report,
+    StageProfiler, merge_stage_profilers, format_profile_report,
 )
 from detection_utils import letterbox, scale_coords, non_max_suppression
+
+
+DETECTION_PROFILE_GROUPS = [
+    ("Setup", [
+        "producer_lut_build",
+        "consumer_runner_create",
+        "consumer_output_alloc",
+        "consumer_dequant_setup",
+    ]),
+    ("Pipeline Totals", [
+        "producer_total",
+        "consumer_total",
+        "writer_total",
+    ]),
+    ("Per-frame Latency", [
+        "latency_preprocess_ready",
+        "latency_input_queue",
+        "latency_result_ready",
+        "latency_write_queue",
+        "latency_full_output",
+    ]),
+    ("Preprocessing", [
+        "image_read",
+        "bgr_to_rgb",
+        "letterbox_total",
+        "norm_lut",
+        "expand_dims",
+    ]),
+    ("DPU / VART", [
+        "dpu_api_total",
+        "dpu_submit",
+        "dpu_wait",
+    ]),
+    ("Decode", [
+        "decode_total",
+        "decode_yolov5_threshold",
+        "decode_yolov5_dequant_sigmoid",
+        "decode_yolov5_grid_anchor",
+        "decode_yolov5_box_class",
+        "decode_yolov5_concat",
+        "decode_ultra_layout",
+        "decode_ultra_threshold",
+        "decode_ultra_dequant",
+        "decode_ultra_class_score",
+        "decode_ultra_box_decode",
+        "decode_ultra_concat",
+    ]),
+    ("Post-processing", [
+        "nms_or_topk",
+        "coord_scale",
+        "draw_boxes",
+    ]),
+    ("Queue / Write", [
+        "consumer_dequeue_wait",
+        "producer_enqueue_wait",
+        "consumer_enqueue_write_wait",
+        "writer_dequeue_wait",
+        "image_write",
+    ]),
+]
+
+
+def _profile_start(profiler):
+    if profiler is not None and profiler.enabled:
+        return time.perf_counter()
+    return None
+
+
+def _profile_end(profiler, stage, start):
+    if start is not None:
+        profiler.add(stage, time.perf_counter() - start)
+
+
+def _profile_add(profiler, stage, elapsed):
+    if profiler is not None and profiler.enabled and elapsed is not None:
+        profiler.add(stage, elapsed)
 
 
 # =============================================================
@@ -91,7 +169,7 @@ class UltralyticsDecoderCache:
 # YOLO DECODER (lazy dequant + vectorized assembly)
 # =============================================================
 def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
-                       cache, output_order):
+                       cache, output_order, profiler=None):
     """
     Decode raw YOLOv5 P3/P4/P5 tensors directly from the DPU's INT8
     buffers.
@@ -127,24 +205,31 @@ def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
         pred_int8 = pred_int8.reshape(1, ny, nx, 3, 5 + num_classes)
 
         # 1. Threshold using only the objectness logit channel.
+        stage_start = _profile_start(profiler)
         obj_logits = pred_int8[..., 4].astype(np.float32) * scale
         mask = obj_logits > logit_thresh
+        _profile_end(profiler, "decode_yolov5_threshold", stage_start)
         if not mask.any():
             continue
 
         # 2. Full dequant + sigmoid only for survivors.
+        stage_start = _profile_start(profiler)
         v_pred = pred_int8[mask].astype(np.float32) * scale
         v_pred[..., :5] = 1.0 / (1.0 + np.exp(-v_pred[..., :5]))
         v_pred[..., 5:] = 1.0 / (1.0 + np.exp(-v_pred[..., 5:]))
         v_obj_conf = v_pred[..., 4]
+        _profile_end(profiler, "decode_yolov5_dequant_sigmoid", stage_start)
 
         # 3. Cached grid + anchor lookups (broadcast then index by mask).
+        stage_start = _profile_start(profiler)
         grid = cache.grid(level, ny, nx)                     # (1, ny, nx, 1, 2)
         v_grid = np.broadcast_to(grid, (1, ny, nx, 3, 2))[mask]
         v_anchors = np.broadcast_to(cache.anchors[level],
                                     (1, ny, nx, 3, 2))[mask]
         stride = cache.strides[level]
+        _profile_end(profiler, "decode_yolov5_grid_anchor", stage_start)
 
+        stage_start = _profile_start(profiler)
         v_xy = (v_pred[..., 0:2] * 2.0 - 0.5 + v_grid) * stride
         v_wh = (v_pred[..., 2:4] * 2.0) ** 2 * v_anchors
 
@@ -160,19 +245,24 @@ def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
         level_boxes[:, 1] = v_xy[:, 1] - v_wh[:, 1] * 0.5
         level_boxes[:, 2] = v_wh[:, 0]
         level_boxes[:, 3] = v_wh[:, 1]
+        _profile_end(profiler, "decode_yolov5_box_class", stage_start)
 
         all_boxes.append(level_boxes)
         all_scores.append(total_conf)
         all_class_ids.append(cls_id)
 
+    stage_start = _profile_start(profiler)
     if not all_boxes:
+        _profile_end(profiler, "decode_yolov5_concat", stage_start)
         return (np.empty((0, 4), dtype=np.float32),
                 np.empty(0, dtype=np.float32),
                 np.empty(0, dtype=np.int32))
 
-    return (np.concatenate(all_boxes, axis=0),
-            np.concatenate(all_scores, axis=0),
-            np.concatenate(all_class_ids, axis=0))
+    decoded = (np.concatenate(all_boxes, axis=0),
+               np.concatenate(all_scores, axis=0),
+               np.concatenate(all_class_ids, axis=0))
+    _profile_end(profiler, "decode_yolov5_concat", stage_start)
+    return decoded
 
 
 def _softmax_last(x):
@@ -199,7 +289,8 @@ def _output_spatial_rank(dims, expected_channels=None):
 
 
 def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
-                              cache, output_order, num_classes, reg_max):
+                              cache, output_order, num_classes, reg_max,
+                              profiler=None):
     """
     Decode Ultralytics anchor-free outputs directly from INT8 buffers.
 
@@ -222,7 +313,9 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
     expected_channels = (4 * reg_max) + num_classes
 
     for level, src_idx in enumerate(output_order):
+        stage_start = _profile_start(profiler)
         pred_int8 = _as_nhwc(int8_outputs[src_idx], expected_channels)
+        _profile_end(profiler, "decode_ultra_layout", stage_start)
         bs, ny, nx, channels = pred_int8.shape
         if channels != expected_channels:
             continue
@@ -231,6 +324,7 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
 
         # 1. Threshold in INT8 space: avoid dequantizing every anchor.
         #    logit > logit_thresh  <=>  int8 > ceil(logit_thresh / scale).
+        stage_start = _profile_start(profiler)
         if np.isinf(logit_thresh):
             int8_thresh = -129 if logit_thresh < 0 else 127
         else:
@@ -241,19 +335,25 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
         cls_int8 = pred_int8_2d[:, 4 * reg_max:]
         best_int8 = cls_int8.max(axis=1)
         mask = best_int8 > int8_thresh
+        _profile_end(profiler, "decode_ultra_threshold", stage_start)
         if not mask.any():
             continue
 
         # 2. Full dequant only for survivors.
+        stage_start = _profile_start(profiler)
         survivors = pred_int8_2d[mask].astype(np.float32) * scale
         cls_logits = survivors[:, 4 * reg_max:]
+        _profile_end(profiler, "decode_ultra_dequant", stage_start)
 
         # 3. argmax on logits is equivalent to argmax on probs; compute
         #    sigmoid only on the single best class per survivor (not 80).
+        stage_start = _profile_start(profiler)
         cls_id = np.argmax(cls_logits, axis=1).astype(np.int32)
         best_logits = np.take_along_axis(cls_logits, cls_id[:, None], axis=1).flatten()
         scores = (1.0 / (1.0 + np.exp(-best_logits))).astype(np.float32)
+        _profile_end(profiler, "decode_ultra_class_score", stage_start)
 
+        stage_start = _profile_start(profiler)
         box_raw = survivors[:, :4 * reg_max]
         if reg_max > 1:
             box_dist = (_softmax_last(box_raw.reshape(-1, 4, reg_max)) *
@@ -280,50 +380,102 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
         level_boxes[:, 1] = y1
         level_boxes[:, 2] = x2 - x1
         level_boxes[:, 3] = y2 - y1
+        _profile_end(profiler, "decode_ultra_box_decode", stage_start)
 
         all_boxes.append(level_boxes)
         all_scores.append(scores)
         all_class_ids.append(cls_id)
 
+    stage_start = _profile_start(profiler)
     if not all_boxes:
+        _profile_end(profiler, "decode_ultra_concat", stage_start)
         return (np.empty((0, 4), dtype=np.float32),
                 np.empty(0, dtype=np.float32),
                 np.empty(0, dtype=np.int32))
 
-    return (np.concatenate(all_boxes, axis=0),
-            np.concatenate(all_scores, axis=0),
-            np.concatenate(all_class_ids, axis=0))
+    decoded = (np.concatenate(all_boxes, axis=0),
+               np.concatenate(all_scores, axis=0),
+               np.concatenate(all_class_ids, axis=0))
+    _profile_end(profiler, "decode_ultra_concat", stage_start)
+    return decoded
 
 
 # =============================================================
 # PRODUCER: letterbox + LUT normalization
 # =============================================================
-def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fix_pos):
+def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std,
+                    fix_pos, profiler=None):
     dpu_h, dpu_w = dpu_shape[1], dpu_shape[2]
+    stage_start = _profile_start(profiler)
     lut = build_norm_lut(norm_mean, norm_std, fix_pos)
+    _profile_end(profiler, "producer_lut_build", stage_start)
 
     for img_path in image_chunk:
+        trace = (
+            {"start": time.perf_counter()}
+            if profiler is not None and profiler.enabled else None
+        )
+        total_start = _profile_start(profiler)
+        stage_start = _profile_start(profiler)
         orig_img = cv2.imread(img_path)
+        _profile_end(profiler, "image_read", stage_start)
         if orig_img is None:
+            _profile_end(profiler, "producer_total", total_start)
             continue
         orig_shape = orig_img.shape[:2]
+
+        stage_start = _profile_start(profiler)
         img_rgb = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
+        _profile_end(profiler, "bgr_to_rgb", stage_start)
+
+        stage_start = _profile_start(profiler)
         img_resized, _, _ = letterbox(img_rgb, new_shape=(dpu_h, dpu_w))
-        img_int8 = np.expand_dims(apply_norm_lut(img_resized, lut), axis=0)
-        input_queue.put((img_int8, orig_img, orig_shape, os.path.basename(img_path)))
+        _profile_end(profiler, "letterbox_total", stage_start)
+
+        stage_start = _profile_start(profiler)
+        img_norm = apply_norm_lut(img_resized, lut)
+        _profile_end(profiler, "norm_lut", stage_start)
+
+        stage_start = _profile_start(profiler)
+        img_int8 = np.expand_dims(img_norm, axis=0)
+        _profile_end(profiler, "expand_dims", stage_start)
+
+        stage_start = _profile_start(profiler)
+        if trace is not None:
+            trace["producer_done"] = time.perf_counter()
+            _profile_add(profiler, "latency_preprocess_ready",
+                         trace["producer_done"] - trace["start"])
+        input_queue.put((img_int8, orig_img, orig_shape,
+                         os.path.basename(img_path), trace))
+        _profile_end(profiler, "producer_enqueue_wait", stage_start)
+        _profile_end(profiler, "producer_total", total_start)
 
 
 # =============================================================
 # WRITER: async image saver (decouples cv2.imwrite from consumer)
 # =============================================================
-def writer_worker(write_queue):
+def writer_worker(write_queue, profiler=None):
     while True:
+        stage_start = _profile_start(profiler)
         item = write_queue.get()
+        _profile_end(profiler, "writer_dequeue_wait", stage_start)
         if item is None:
             write_queue.task_done()
             break
-        out_path, img = item
+        out_path, img, trace = item
+        if trace is not None:
+            trace["writer_start"] = time.perf_counter()
+            _profile_add(profiler, "latency_write_queue",
+                         trace["writer_start"] - trace["consumer_done"])
+        total_start = _profile_start(profiler)
+        stage_start = _profile_start(profiler)
         cv2.imwrite(out_path, img)
+        _profile_end(profiler, "image_write", stage_start)
+        if trace is not None:
+            trace["writer_done"] = time.perf_counter()
+            _profile_add(profiler, "latency_full_output",
+                         trace["writer_done"] - trace["start"])
+        _profile_end(profiler, "writer_total", total_start)
         write_queue.task_done()
 
 
@@ -332,13 +484,20 @@ def writer_worker(write_queue):
 # =============================================================
 def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
                     out_dir, m_cfg, d_cfg, fix_pos_outs, output_order,
-                    progress, results):
+                    progress, results, profiler=None, draw_outputs=True,
+                    save_outputs=True):
+    stage_start = _profile_start(profiler)
     runner = vart.Runner.create_runner(dpu_subgraph, "run")
+    _profile_end(profiler, "consumer_runner_create", stage_start)
+
+    stage_start = _profile_start(profiler)
     output_tensors = runner.get_output_tensors()
     output_data = [np.empty(tuple(t.dims), dtype=np.int8) for t in output_tensors]
+    _profile_end(profiler, "consumer_output_alloc", stage_start)
 
-    # Pre-compute output dequant scales once (one float per output tensor).
+    stage_start = _profile_start(profiler)
     dequant_scales = [np.float32(2 ** -fp) for fp in fix_pos_outs]
+    _profile_end(profiler, "consumer_dequant_setup", stage_start)
 
     conf_thresh = m_cfg.get('conf_threshold', 0.25)
     iou_thresh = m_cfg.get('iou_threshold', 0.45)
@@ -362,32 +521,51 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
     local_class_hist = {}
 
     while True:
+        stage_start = _profile_start(profiler)
         item = input_queue.get()
+        _profile_end(profiler, "consumer_dequeue_wait", stage_start)
         if item is None:
             input_queue.task_done()
             break
 
-        img_int8, orig_img, orig_shape, file_name = item
+        img_int8, orig_img, orig_shape, file_name, trace = item
+        if trace is not None:
+            trace["consumer_start"] = time.perf_counter()
+            _profile_add(profiler, "latency_input_queue",
+                         trace["consumer_start"] - trace["producer_done"])
 
         # 1. DPU execution
+        consumer_total_start = _profile_start(profiler)
+        dpu_total_start = _profile_start(profiler)
         t_start = time.perf_counter()
+        stage_start = _profile_start(profiler)
         jid = runner.execute_async([img_int8], output_data)
+        _profile_end(profiler, "dpu_submit", stage_start)
+
+        stage_start = _profile_start(profiler)
         runner.wait(jid)
+        _profile_end(profiler, "dpu_wait", stage_start)
         local_dpu_time += time.perf_counter() - t_start
+        _profile_end(profiler, "dpu_api_total", dpu_total_start)
 
         # 2. Decode directly off the int8 buffers (lazy dequant).
+        stage_start = _profile_start(profiler)
         if decoder == 'ultralytics_anchor_free':
             boxes, scores, class_ids = decode_ultralytics_output(
                 output_data, dequant_scales, conf_thresh, cache, output_order,
-                num_classes, reg_max)
+                num_classes, reg_max, profiler)
         else:
             boxes, scores, class_ids = decode_yolo_output(
-                output_data, dequant_scales, conf_thresh, cache, output_order)
+                output_data, dequant_scales, conf_thresh, cache, output_order,
+                profiler)
+        _profile_end(profiler, "decode_total", stage_start)
 
+        result_ready_recorded = False
         # 3. Post-process: end2end models (one2one head) use top-k
         #    selection instead of NMS because the model was trained with
         #    bipartite matching to produce duplicate-free predictions.
         if boxes.shape[0] > 0:
+            stage_start = _profile_start(profiler)
             if end2end:
                 # Top-k by score, already filtered by conf_threshold in
                 # the decoder logit space.
@@ -398,45 +576,75 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
             else:
                 indices = non_max_suppression(
                     boxes, scores, conf_thresh, iou_thresh, class_ids=class_ids)
+            _profile_end(profiler, "nms_or_topk", stage_start)
+
             if len(indices) > 0:
                 final_boxes = boxes[indices]
                 final_class_ids = class_ids[indices]
                 final_scores = scores[indices]
+                for cid in final_class_ids:
+                    cid = int(cid)
+                    local_class_hist[cid] = local_class_hist.get(cid, 0) + 1
 
                 # xywh -> xyxy on the surviving rows only.
+                stage_start = _profile_start(profiler)
                 xyxy = final_boxes.copy()
                 xyxy[:, 2] = final_boxes[:, 0] + final_boxes[:, 2]
                 xyxy[:, 3] = final_boxes[:, 1] + final_boxes[:, 3]
                 xyxy = scale_coords(dpu_shape, xyxy, orig_shape)
+                _profile_end(profiler, "coord_scale", stage_start)
 
-                for j in range(xyxy.shape[0]):
-                    x1, y1, x2, y2 = map(int, xyxy[j, :4])
-                    cid = int(final_class_ids[j])
-                    conf = float(final_scores[j])
-                    local_class_hist[cid] = local_class_hist.get(cid, 0) + 1
-                    cv2.rectangle(orig_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    name = class_names[cid] if class_names and cid < len(class_names) else f"Class {cid}"
-                    cv2.putText(orig_img, f"{name}: {conf:.2f}",
-                                (x1, max(15, y1 - 10)),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                if trace is not None:
+                    trace["result_ready"] = time.perf_counter()
+                    _profile_add(profiler, "latency_result_ready",
+                                 trace["result_ready"] - trace["start"])
+                    result_ready_recorded = True
 
-        # 4. Hand off to writer thread (consumer never blocks on disk I/O).
-        write_queue.put((os.path.join(out_dir, file_name), orig_img))
+                if draw_outputs:
+                    stage_start = _profile_start(profiler)
+                    for j in range(xyxy.shape[0]):
+                        x1, y1, x2, y2 = map(int, xyxy[j, :4])
+                        cid = int(final_class_ids[j])
+                        conf = float(final_scores[j])
+                        cv2.rectangle(orig_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        name = class_names[cid] if class_names and cid < len(class_names) else f"Class {cid}"
+                        cv2.putText(orig_img, f"{name}: {conf:.2f}",
+                                    (x1, max(15, y1 - 10)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    _profile_end(profiler, "draw_boxes", stage_start)
+
+        if trace is not None and not result_ready_recorded:
+            trace["result_ready"] = time.perf_counter()
+            _profile_add(profiler, "latency_result_ready",
+                         trace["result_ready"] - trace["start"])
+
+        if save_outputs:
+            # 4. Hand off to writer thread (consumer never blocks on disk I/O).
+            stage_start = _profile_start(profiler)
+            if trace is not None:
+                trace["consumer_done"] = time.perf_counter()
+            write_queue.put((os.path.join(out_dir, file_name), orig_img, trace))
+            _profile_end(profiler, "consumer_enqueue_write_wait", stage_start)
 
         local_total += 1
         progress.increment()
         input_queue.task_done()
+        _profile_end(profiler, "consumer_total", consumer_total_start)
 
-    results[thread_id] = (local_total, local_dpu_time, local_class_hist)
+    results[thread_id] = (local_total, local_dpu_time, local_class_hist, profiler)
     del runner
 
 
 # =============================================================
 # MAIN
 # =============================================================
-def run_detection(model_id, dataset_id, thread_override):
+def run_detection(model_id, dataset_id, thread_override, profile=False,
+                  profile_json=False, queue_size=40, draw_outputs=True,
+                  save_outputs=True, producers_override=None):
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
+    profile_enabled = profile or profile_json
+    queue_size = max(1, int(queue_size))
 
     if m_cfg['type'] != 'detection':
         print(f"[ERROR] Model {model_id} is a {m_cfg['type']} model. "
@@ -456,18 +664,24 @@ def run_detection(model_id, dataset_id, thread_override):
     # up to 4 concurrent DPU runners). 4 producers keep them fed now that
     # LUT normalization removes the producer bottleneck.
     num_consumers = thread_override if thread_override else ACTIVE_THREADS
-    num_producers = 4
+    num_producers = producers_override if producers_override is not None else 4
 
     model_path = f"{model_id}_kria.xmodel"
     dataset_path = os.path.join("datasets", d_cfg['folder_name'])
     out_dir = f"outputs_{model_id}"
-    os.makedirs(out_dir, exist_ok=True)
+    if save_outputs:
+        os.makedirs(out_dir, exist_ok=True)
 
     print(f"\n[INFO] Starting YOLO Detection Pipeline")
     print(f"       Model:    {m_cfg['name']}")
     print(f"       Dataset:  {d_cfg['name']}")
     print(f"       Threads:  {num_consumers} consumers, {num_producers} producers")
-    print(f"       Output:   {out_dir}/")
+    print(f"       Queue:    input maxsize {queue_size}")
+    print(f"       Draw:     {'enabled' if draw_outputs else 'disabled'}")
+    print(f"       Save:     {'enabled' if save_outputs else 'disabled'}")
+    print(f"       Output:   {out_dir}/" if save_outputs else "       Output:   disabled")
+    if profile_enabled:
+        print(f"       Profile:  enabled")
 
     try:
         subgraph, dpu_shape, fix_pos_in, fix_pos_outs = setup_dpu(model_path)
@@ -496,11 +710,13 @@ def run_detection(model_id, dataset_id, thread_override):
         print(f"[ERROR] No images found in {dataset_path}")
         return
 
-    img_queue = queue.Queue(maxsize=40)
-    write_queue = queue.Queue(maxsize=128)
+    img_queue = queue.Queue(maxsize=queue_size)
+    write_queue = queue.Queue(maxsize=128) if save_outputs else None
     progress = ProgressCounter()
     results = [None] * num_consumers
     total_imgs = len(all_images)
+    producer_profilers = []
+    writer_profiler = StageProfiler(enabled=True) if profile_enabled and save_outputs else None
 
     chunk_size = (total_imgs + num_producers - 1) // num_producers
     chunks = [all_images[i:i + chunk_size] for i in range(0, total_imgs, chunk_size)]
@@ -514,15 +730,19 @@ def run_detection(model_id, dataset_id, thread_override):
         idle_p = float(np.mean([get_power_mw() / 1000.0 for _ in range(5)]))
         start_wall = time.time()
 
-        # Async writer thread.
-        w_thread = threading.Thread(target=writer_worker, args=(write_queue,), daemon=True)
-        w_thread.start()
+        w_thread = None
+        if save_outputs:
+            w_thread = threading.Thread(
+                target=writer_worker, args=(write_queue, writer_profiler), daemon=True)
+            w_thread.start()
 
         c_threads = []
         for i in range(num_consumers):
+            consumer_profiler = StageProfiler(enabled=True) if profile_enabled else None
             t = threading.Thread(target=consumer_worker, args=(
                 i, img_queue, write_queue, subgraph, out_dir, m_cfg, d_cfg,
-                fix_pos_outs, output_order, progress, results))
+                fix_pos_outs, output_order, progress, results, consumer_profiler,
+                draw_outputs, save_outputs))
             t.start()
             c_threads.append(t)
 
@@ -530,9 +750,12 @@ def run_detection(model_id, dataset_id, thread_override):
         for i in range(num_producers):
             if i >= len(chunks):
                 break
+            producer_profiler = StageProfiler(enabled=True) if profile_enabled else None
+            producer_profilers.append(producer_profiler)
             t = threading.Thread(target=producer_worker, args=(
                 chunks[i], img_queue, dpu_shape,
-                d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in))
+                d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in,
+                producer_profiler))
             t.start()
             p_threads.append(t)
 
@@ -548,8 +771,9 @@ def run_detection(model_id, dataset_id, thread_override):
             sys.stdout.flush()
             time.sleep(0.5)
 
-        write_queue.put(None)
-        w_thread.join()
+        if save_outputs:
+            write_queue.put(None)
+            w_thread.join()
 
         sys.stdout.write(f"\r[INFO] Progress: {total_imgs}/{total_imgs} (100.0%) Done!\n")
         end_wall = time.time()
@@ -590,10 +814,30 @@ def run_detection(model_id, dataset_id, thread_override):
             ("DPU Duty Cycle:", f"{min(duty_cycle, 100.0):.2f} %"),
             ("DPU Compute Eff.:", f"{compute_eff:.2f} %"),
             ("---", None),
-            ("Output Images:", f"./{out_dir}/"),
+            ("Output Images:", f"./{out_dir}/" if save_outputs else "disabled"),
         ],
     )
     print("\n" + report)
+    full_report = report
+
+    merged_profiler = None
+    profile_report = ""
+    if profile_enabled:
+        profilers = list(producer_profilers)
+        profilers.extend(r[3] for r in results if r and len(r) > 3)
+        if writer_profiler is not None:
+            profilers.append(writer_profiler)
+        merged_profiler = merge_stage_profilers(profilers)
+        profile_report = format_profile_report(
+            "DETAILED PERFORMANCE PROFILE", merged_profiler,
+            total_wall_time, DETECTION_PROFILE_GROUPS)
+        profile_note = (
+            "Memory-transfer note: with the current NumPy-based VART Python API, "
+            "explicit cache/DMA sync time is not separated. Use dpu_submit, "
+            "dpu_wait, and dpu_api_total as the observable VART timing breakdown.\n"
+        )
+        print(profile_report + profile_note)
+        full_report += "\n" + profile_report + profile_note
 
     # Print per-class detection histogram (top 20 classes by count).
     if class_hist:
@@ -607,8 +851,33 @@ def run_detection(model_id, dataset_id, thread_override):
             print(f"    {name:<20s} {count:6d}  ({100*count/total_dets:.2f}%)")
         print()
 
-    with open(f"results_{model_id}_t{num_consumers}.txt", "w") as f:
-        f.write(report)
+    result_path = f"results_{model_id}_t{num_consumers}.txt"
+    with open(result_path, "w") as f:
+        f.write(full_report)
+
+    if profile_json and merged_profiler is not None:
+        profile_path = f"results_{model_id}_t{num_consumers}_profile.json"
+        payload = {
+            "model": model_id,
+            "dataset": dataset_id,
+            "threads": num_consumers,
+            "producers": num_producers,
+            "queue_size": queue_size,
+            "draw_outputs": draw_outputs,
+            "save_outputs": save_outputs,
+            "images_processed": total_images,
+            "wall_time_s": total_wall_time,
+            "fps_app": fps_app,
+            "avg_dpu_latency_ms": avg_dpu_latency * 1000.0,
+            "stages": merged_profiler.summary(total_wall_time),
+            "memory_transfer_note": (
+                "Current NumPy-based VART Python API does not expose separate "
+                "cache/DMA sync timing; dpu_submit/dpu_wait/dpu_api_total are "
+                "the observable VART timing stages."
+            ),
+        }
+        with open(profile_path, "w") as f:
+            json.dump(payload, f, indent=2)
 
 
 if __name__ == "__main__":
@@ -616,6 +885,23 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, required=True)
     parser.add_argument('--dataset', type=str, required=True)
     parser.add_argument('--threads', type=int)
+    parser.add_argument('--profile', action='store_true',
+                        help='Enable detailed per-stage performance profiling')
+    parser.add_argument('--profile-json', action='store_true',
+                        help='Write detailed profile data to JSON')
+    parser.add_argument('--queue-size', type=int, default=40,
+                        help='Input queue maxsize; use 1 for low-latency mode')
+    parser.add_argument('--no-draw', action='store_true',
+                        help='Skip drawing boxes and labels on output images')
+    parser.add_argument('--no-save', action='store_true',
+                        help='Skip writing output images')
+    parser.add_argument('--producers', type=int, default=None,
+                        help='Number of producer threads (default: 4)')
     args = parser.parse_args()
 
-    run_detection(args.model, args.dataset, args.threads)
+    run_detection(args.model, args.dataset, args.threads,
+                  profile=args.profile, profile_json=args.profile_json,
+                  queue_size=args.queue_size,
+                  draw_outputs=not args.no_draw,
+                  save_outputs=not args.no_save,
+                  producers_override=args.producers)
