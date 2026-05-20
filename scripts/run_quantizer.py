@@ -23,9 +23,7 @@ import random
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-from torch.utils.data import Dataset
-from PIL import Image
-import cv2
+from torch.utils.data import Subset
 import pytorch_nndct
 
 # Project-root import path
@@ -37,12 +35,15 @@ if parent_dir not in sys.path:
 from model_config import get_active_model
 from dataset_config import get_active_dataset
 from model_utils import prepare_model
-from detection_utils import letterbox
+from dataset_utils import FlatImageDataset
+from optimizer_utils import evaluate_loss
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True, help='Model ID')
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
     parser.add_argument('--dataset', type=str,
                         help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
                              'in dataset_config.py when omitted.')
@@ -53,70 +54,6 @@ def parse_args():
     parser.add_argument('--fast_ft', action='store_true',
                         help='Enable AdaQuant fast fine-tuning')
     return parser.parse_args()
-
-
-# =============================================================
-# CALIBRATION DATASETS
-# =============================================================
-class SimpleImageDataset(Dataset):
-    """Flat-folder image dataset. The calibration label is unused."""
-
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.image_files = [f for f in os.listdir(root_dir)
-                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx):
-        img_name = os.path.join(self.root_dir, self.image_files[idx])
-        image = Image.open(img_name).convert('RGB')
-        if self.transform:
-            image = self.transform(image)
-        return image, 0
-
-
-class YoloCalibrationDataset(Dataset):
-    """
-    Letterbox-based calibration dataset for YOLO-family detectors.
-
-    Mirrors the on-board preprocessing exactly so that the activation ranges
-    seen by the quantizer match those produced at deployment.
-    """
-
-    def __init__(self, root_dir, input_shape, transform=None):
-        self.root_dir = root_dir
-        self.input_shape = input_shape  # (H, W)
-        self.transform = transform
-        self.image_files = [f for f in os.listdir(root_dir)
-                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.root_dir, self.image_files[idx])
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img, _, _ = letterbox(img, new_shape=self.input_shape)
-        if self.transform:
-            img = self.transform(img)
-        return img, 0
-
-
-def evaluate(model, loader, loss_fn):
-    """Aggregate-loss evaluator passed to AdaQuant fast fine-tuning."""
-    model.eval()
-    total_loss = 0
-    device = next(model.parameters()).device
-    with torch.no_grad():
-        for images, labels in loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            total_loss += loss_fn(outputs, labels).item()
-    return total_loss
 
 
 # =============================================================
@@ -152,7 +89,6 @@ def run_quantization(args):
         # Limit to actual_subset_len with random sampling to avoid bias from
         # alphabetical ordering (ImageFolder sorts classes by name).
         if len(dataset) > actual_subset_len:
-            from torch.utils.data import Subset
             random.seed(42)  # Fixed seed for reproducibility
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
@@ -164,23 +100,21 @@ def run_quantization(args):
             transforms.Normalize(d_cfg['normalization']['mean'],
                                  d_cfg['normalization']['std']),
         ])
-        dataset = YoloCalibrationDataset(
+        dataset = FlatImageDataset(
             root_dir=d_cfg['calib_path'],
-            input_shape=m_cfg['input_shape'],
             transform=yolo_transform,
+            letterbox_shape=m_cfg['input_shape'],
         )
         # Random sampling for detection calibration as well.
         if len(dataset) > actual_subset_len:
-            from torch.utils.data import Subset
             random.seed(42)
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
     else:
         print(f"[INFO] Using flat-folder image loader for {task_type} task.")
-        dataset = SimpleImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
+        dataset = FlatImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
         # Random sampling for other task types as well.
         if len(dataset) > actual_subset_len:
-            from torch.utils.data import Subset
             random.seed(42)
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
@@ -195,10 +129,13 @@ def run_quantization(args):
 
     # Optional AdaQuant fast fine-tuning. Only available for classification.
     if args.fast_ft:
-        if args.quant_mode == 'calib':
+        if task_type != 'classification':
+            print(f"[WARN] --fast_ft is currently only wired for classification "
+                  f"(task='{task_type}'). Skipping AdaQuant.")
+        elif args.quant_mode == 'calib':
             print("[INFO] Phase 1: Running Fast Fine-Tuning (AdaQuant)...")
             loss_fn = torch.nn.CrossEntropyLoss()
-            quantizer.fast_finetune(evaluate, (quant_model, loader, loss_fn))
+            quantizer.fast_finetune(evaluate_loss, (quant_model, loader, loss_fn))
         else:
             print("[INFO] Phase 2: Loading Fine-Tuned parameters...")
             quantizer.load_ft_param()

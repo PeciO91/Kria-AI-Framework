@@ -1,19 +1,22 @@
 """
 Shared board-side utilities for DPU inference pipelines.
 
-Contains components used by both run_inference.py (classification) and
-run_detection.py (object detection):
+Contains components used by run_inference.py (classification),
+run_detection.py (object detection), and run_segmentation.py:
 
 - PowerMonitor: background sampler for SOM total power (Watts)
 - ProgressCounter: thread-safe progress counter
-- setup_dpu(model_path): loads xmodel, returns (subgraph, dpu_shape, fix_pos_in, fix_pos_outs)
-- compute_norm_constants(mean, std, fix_pos): pre-multiplies normalization for INT8 input
-- preprocess_image(img_rgb, dpu_shape, math_scale, math_shift): vectorized resize + normalize
+- StageProfiler / merge_stage_profilers / format_profile_report: per-stage
+  timing instrumentation for multi-threaded pipelines
+- setup_dpu(model_path): loads xmodel, returns
+  (subgraph, dpu_shape, fix_pos_in, fix_pos_outs)
+- build_norm_lut(mean, std, fix_pos): builds a uint8 -> int8 normalization LUT
+- apply_norm_lut(img_uint8, lut): applies the LUT to an HWC image
+- preprocess_image(img_rgb, dpu_shape, lut): resize + normalize, returns NHWC int8
 - format_report(title, metrics): pretty-prints a metrics block and returns the string
 """
 import time
 import threading
-import subprocess
 
 import numpy as np
 import cv2
@@ -230,8 +233,7 @@ def compute_norm_constants(norm_mean, norm_std, fix_pos):
 
 def build_norm_lut(norm_mean, norm_std, fix_pos):
     """
-    Pre-bake the uint8 -> int8 normalization into a per-channel lookup
-    table.
+    Pre-bake the uint8 -> int8 normalization into a lookup table.
 
     For every input byte u and every channel c, the entry lut[u, c]
     stores the int8 equivalent of (u * math_scale[c] - math_shift[c]),
@@ -240,15 +242,23 @@ def build_norm_lut(norm_mean, norm_std, fix_pos):
     pipeline but eliminates the per-frame float multiply over a 1.2M-pixel
     tensor.
 
+    If all three channels share identical mean/std (and therefore identical
+    LUT columns), a flat 1D LUT of shape (256,) is returned so `apply_norm_lut`
+    can dispatch to the faster `np.take` path without a per-frame check.
+
     Returns
     -------
     lut : ndarray
-        Shape (256, 3), dtype int8.
+        Shape (256,) when channels are identical, else (256, 3). dtype int8.
     """
     math_scale, math_shift = compute_norm_constants(norm_mean, norm_std, fix_pos)
     u = np.arange(256, dtype=np.float32)[:, None]                # (256, 1)
     table = np.rint(u * math_scale - math_shift)                 # (256, 3)
-    return np.clip(table, -128, 127).astype(np.int8)
+    lut = np.clip(table, -128, 127).astype(np.int8)
+    if (np.array_equal(lut[:, 0], lut[:, 1]) and
+            np.array_equal(lut[:, 0], lut[:, 2])):
+        return np.ascontiguousarray(lut[:, 0])
+    return lut
 
 
 # Cached channel-index helper for per-channel fancy indexing.
@@ -257,14 +267,17 @@ _CHANNEL_INDEX_3 = np.arange(3, dtype=np.intp)
 
 def apply_norm_lut(img_uint8, lut):
     """
-    Apply a (256, 3) per-channel LUT to an HWC uint8 image and return
-    the int8 result with identical shape. Uses numpy fancy indexing,
-    which is portable across OpenCV versions and ~10x faster than the
-    explicit float multiply on ARM.
+    Apply a normalization LUT to an HWC uint8 image and return the int8
+    result with identical shape. Uses numpy fancy indexing, which is
+    portable across OpenCV versions and ~10x faster than the explicit
+    float multiply on ARM.
+
+    A 1D LUT of shape (256,) means all channels share the same mapping
+    and `np.take` is used. A 2D LUT of shape (256, 3) dispatches to
+    per-channel fancy indexing.
     """
-    if (np.array_equal(lut[:, 0], lut[:, 1]) and
-            np.array_equal(lut[:, 0], lut[:, 2])):
-        return np.take(lut[:, 0], img_uint8)
+    if lut.ndim == 1:
+        return np.take(lut, img_uint8)
     return lut[img_uint8, _CHANNEL_INDEX_3]
 
 

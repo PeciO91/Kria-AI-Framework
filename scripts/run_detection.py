@@ -49,7 +49,6 @@ from detection_utils import letterbox, scale_coords, non_max_suppression
 
 DETECTION_PROFILE_GROUPS = [
     ("Setup", [
-        "producer_lut_build",
         "consumer_runner_create",
         "consumer_output_alloc",
         "consumer_dequant_setup",
@@ -197,7 +196,7 @@ def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
 
     for level, src_idx in enumerate(output_order):
         pred_int8 = int8_outputs[src_idx]
-        bs, ny, nx, channels = pred_int8.shape
+        _, ny, nx, channels = pred_int8.shape
         num_classes = (channels // 3) - 5
         scale = dequant_scales[src_idx]
 
@@ -215,8 +214,7 @@ def decode_yolo_output(int8_outputs, dequant_scales, conf_threshold,
         # 2. Full dequant + sigmoid only for survivors.
         stage_start = _profile_start(profiler)
         v_pred = pred_int8[mask].astype(np.float32) * scale
-        v_pred[..., :5] = 1.0 / (1.0 + np.exp(-v_pred[..., :5]))
-        v_pred[..., 5:] = 1.0 / (1.0 + np.exp(-v_pred[..., 5:]))
+        v_pred[:] = 1.0 / (1.0 + np.exp(-v_pred))
         v_obj_conf = v_pred[..., 4]
         _profile_end(profiler, "decode_yolov5_dequant_sigmoid", stage_start)
 
@@ -403,12 +401,8 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
 # =============================================================
 # PRODUCER: letterbox + LUT normalization
 # =============================================================
-def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std,
-                    fix_pos, profiler=None):
+def producer_worker(image_chunk, input_queue, dpu_shape, lut, profiler=None):
     dpu_h, dpu_w = dpu_shape[1], dpu_shape[2]
-    stage_start = _profile_start(profiler)
-    lut = build_norm_lut(norm_mean, norm_std, fix_pos)
-    _profile_end(profiler, "producer_lut_build", stage_start)
 
     for img_path in image_chunk:
         trace = (
@@ -660,6 +654,9 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
             print(f"[ERROR] Model {model_id} is missing 'anchors' / 'strides' in model_config.py.")
             sys.exit(1)
 
+    # Build normalization LUT once and share across producers (read-only, thread-safe).
+    lut = build_norm_lut(d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in)
+
     # Consumer count comes from board_config.ACTIVE_THREADS (KV260 supports
     # up to 4 concurrent DPU runners). 4 producers keep them fed now that
     # LUT normalization removes the producer bottleneck.
@@ -753,9 +750,7 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
             producer_profiler = StageProfiler(enabled=True) if profile_enabled else None
             producer_profilers.append(producer_profiler)
             t = threading.Thread(target=producer_worker, args=(
-                chunks[i], img_queue, dpu_shape,
-                d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in,
-                producer_profiler))
+                chunks[i], img_queue, dpu_shape, lut, producer_profiler))
             t.start()
             p_threads.append(t)
 
@@ -882,8 +877,12 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True)
-    parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
+    parser.add_argument('--dataset', type=str,
+                        help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
+                             'in dataset_config.py when omitted.')
     parser.add_argument('--threads', type=int)
     parser.add_argument('--profile', action='store_true',
                         help='Enable detailed per-stage performance profiling')

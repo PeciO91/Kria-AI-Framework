@@ -34,7 +34,7 @@ def run_compiler(model_id):
     if not os.path.exists(quant_model):
         print(f"[ERROR] Quantized model not found: {quant_model}")
         print(f"[HINT]  Ensure run_quantizer.py finished successfully in 'test' mode.")
-        return
+        sys.exit(1)
 
     output_dir = os.path.join("build", build_dir_name, "compiled")
     os.makedirs(output_dir, exist_ok=True)
@@ -58,11 +58,14 @@ def run_compiler(model_id):
         print(f"Final Model: {output_dir}/{model_id}_kria.xmodel")
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Compilation failed:\n{e.stderr}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True, help='Model ID from model_config.py')
+    parser.add_argument('--model', type=str,
+                        help='Model ID from model_config.py. Falls back to '
+                             'ACTIVE_MODEL_ID when omitted.')
     args = parser.parse_args()
 
     run_compiler(args.model)

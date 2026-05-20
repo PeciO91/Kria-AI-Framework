@@ -30,8 +30,7 @@ from board_utils import (
 # =============================================================
 # PRODUCER: resize + LUT normalization
 # =============================================================
-def producer_worker(image_chunk, input_queue, dpu_shape, norm_mean, norm_std, fix_pos):
-    lut = build_norm_lut(norm_mean, norm_std, fix_pos)
+def producer_worker(image_chunk, input_queue, dpu_shape, lut):
     for img_path, class_idx in image_chunk:
         img = cv2.imread(img_path)
         if img is None:
@@ -114,6 +113,9 @@ def run_inference(model_id, dataset_id, thread_override):
         print(f"[ERROR] Failed to load model {model_path}: {e}")
         return
 
+    # Build normalization LUT once and share across producers (read-only, thread-safe).
+    lut = build_norm_lut(d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in)
+
     # Class names priority: model_config > dataset_config
     class_names = m_cfg.get('classes', d_cfg.get('classes', []))
 
@@ -159,8 +161,7 @@ def run_inference(model_id, dataset_id, thread_override):
             if i >= len(chunks):
                 break
             t = threading.Thread(target=producer_worker, args=(
-                chunks[i], img_queue, dpu_shape,
-                d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in))
+                chunks[i], img_queue, dpu_shape, lut))
             t.start()
             p_threads.append(t)
 
@@ -200,8 +201,8 @@ def run_inference(model_id, dataset_id, thread_override):
         f"ANALYTICAL REPORT: {m_cfg['name'].upper()} | DPU THREADS: {num_consumers}",
         [
             ("Images Processed:", f"{total_imgs_done}"),
-            ("Top-1 Accuracy:", f"{(total_t1/total_imgs_done)*100:.2f} %"),
-            ("Top-5 Accuracy:", f"{(total_t5/total_imgs_done)*100:.2f} %"),
+            ("Top-1 Accuracy:", f"{(total_t1/total_imgs_done)*100:.2f} %" if total_imgs_done > 0 else "N/A"),
+            ("Top-5 Accuracy:", f"{(total_t5/total_imgs_done)*100:.2f} %" if total_imgs_done > 0 else "N/A"),
             ("---", None),
             ("Application FPS:", f"{fps_app:.2f} img/s"),
             ("DPU Latency (avg):", f"{avg_dpu_latency*1000:.2f} ms"),
@@ -221,8 +222,12 @@ def run_inference(model_id, dataset_id, thread_override):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True, help='Model ID')
-    parser.add_argument('--dataset', type=str, required=True, help='Dataset ID')
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
+    parser.add_argument('--dataset', type=str,
+                        help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
+                             'in dataset_config.py when omitted.')
     parser.add_argument('--threads', type=int, help='Override DPU thread count')
     args = parser.parse_args()
 

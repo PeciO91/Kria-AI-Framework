@@ -3,13 +3,15 @@ End-to-end deployment driver.
 
 Chains the four host-side stages (Inspector, optional Optimizer, Quantizer
 calib + test, Compiler) and then transfers the compiled xmodel along with
-all board-side scripts to the Kria target via SCP.
+all board-side scripts to the Kria target. Transfer is configurable via
+``--transfer {scp,rsync,local,none}``; SCP remains the default.
 
 Each stage is a separate subprocess so that quantizer / compiler errors do
 not interrupt the next deployment in a sweep.
 """
 import os
 import sys
+import shutil
 import subprocess
 import argparse
 import time
@@ -22,7 +24,7 @@ if SCRIPT_ROOT not in sys.path:
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from model_config import get_active_model
+from model_config import get_active_model, ACTIVE_MODEL_ID
 try:
     from board_config import BOARD_IP, BOARD_USER
 except ImportError:
@@ -61,7 +63,9 @@ def run_stage(command, stage_name):
 
 def main():
     parser = argparse.ArgumentParser(description="Vitis AI Master Deployment Pipeline")
-    parser.add_argument('--model', type=str, required=True, help='Model ID')
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
     parser.add_argument('--dataset', type=str, help='Dataset ID')
     parser.add_argument('--prune', type=float, help='Pruning ratio')
     parser.add_argument('--method', choices=['iterative', 'onestep'], default='iterative',
@@ -76,10 +80,25 @@ def main():
     parser.add_argument('--skip_inspect', action='store_true', help='Skip the inspection stage')
     parser.add_argument('--ip', type=str, default=BOARD_IP, help='Kria board IP')
     parser.add_argument('--user', type=str, default=BOARD_USER, help='SSH user on the board')
+    parser.add_argument('--transfer', choices=['scp', 'rsync', 'local', 'none'],
+                        default='scp',
+                        help='Transfer method after compilation: '
+                             'scp=copy to Kria via SCP (default); '
+                             'rsync=copy to Kria via rsync (faster on re-deploys); '
+                             'local=copy to a local directory (--local_dest); '
+                             'none=skip transfer entirely.')
+    parser.add_argument('--local_dest', type=str,
+                        help='Destination directory for --transfer local '
+                             '(e.g. an SD-card mount point).')
 
     args = parser.parse_args()
     pipeline_start = time.time()
 
+    # Resolve --model fallback up-front so we can forward a concrete ID to
+    # every stage subprocess (avoids passing the literal string "None").
+    if not args.model:
+        args.model = ACTIVE_MODEL_ID
+        print(f"[INFO] No --model provided, using ACTIVE_MODEL_ID='{args.model}'.")
     m_cfg = get_active_model(args.model)
     # Build directory uses human-readable name; xmodel filename uses
     # the canonical model_id so it matches what board runners look for.
@@ -126,43 +145,73 @@ def main():
         return
 
     # 6. Transfer to Kria board (xmodel + all board-side scripts)
-    if args.ip:
-        local_model = os.path.join(PROJECT_ROOT, "build", build_dir_name, "compiled",
-                                   f"{args.model}_kria.xmodel")
-        remote_dest = f"{args.user}@{args.ip}:/home/{args.user}/"
+    transfer_payload = [
+        os.path.join(PROJECT_ROOT, "build", build_dir_name, "compiled",
+                     f"{args.model}_kria.xmodel"),
+        get_script_path("run_inference.py"),
+        get_script_path("run_detection.py"),
+        get_script_path("run_segmentation.py"),
+        get_script_path("detection_utils.py"),
+        get_script_path("board_utils.py"),
+        get_project_file("model_config.py"),
+        get_project_file("dataset_config.py"),
+        get_project_file("board_config.py"),
+    ]
+    existing_files = [f for f in transfer_payload if os.path.exists(f)]
 
-        print(f"\n{'='*70}\n >> STAGE: Transfer to Kria (Full Package)\n{'='*70}")
+    runner = "run_detection.py" if m_cfg.get("type") == "detection" else "run_inference.py"
+    dataset_tip = f" --dataset {args.dataset}" if args.dataset else ""
 
-        files_to_send = [
-            local_model,
-            get_script_path("run_inference.py"),
-            get_script_path("run_detection.py"),
-            get_script_path("run_segmentation.py"),
-            get_script_path("detection_utils.py"),
-            get_script_path("board_utils.py"),
-            get_project_file("model_config.py"),
-            get_project_file("dataset_config.py"),
-            get_project_file("board_config.py"),
-        ]
-        existing_files = [f for f in files_to_send if os.path.exists(f)]
+    if args.transfer == 'none':
+        print(f"\n{'='*70}\n >> STAGE: Transfer skipped (--transfer none)\n{'='*70}")
+        print(f"[INFO] Compiled xmodel: "
+              f"build/{build_dir_name}/compiled/{args.model}_kria.xmodel")
 
-        # BatchMode=yes prevents SSH from hanging on a missing key.
-        transfer_cmd = [
-            "scp",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "BatchMode=yes",
-        ] + existing_files + [remote_dest]
+    elif args.transfer == 'local':
+        if not args.local_dest:
+            print(f"\n[ERROR] --transfer local requires --local_dest <directory>.")
+        else:
+            print(f"\n{'='*70}\n >> STAGE: Transfer to local "
+                  f"({args.local_dest})\n{'='*70}")
+            try:
+                os.makedirs(args.local_dest, exist_ok=True)
+                for src in existing_files:
+                    shutil.copy2(src, os.path.join(args.local_dest, os.path.basename(src)))
+                print(f"\n[SUCCESS] Files copied to {args.local_dest}")
+            except OSError as e:
+                print(f"\n[ERROR] Local copy failed: {e}")
 
-        try:
-            subprocess.run(transfer_cmd, check=True)
-            print(f"\n[SUCCESS] Model and scripts transferred to {args.ip}")
-            runner = "run_detection.py" if m_cfg.get("type") == "detection" else "run_inference.py"
-            dataset_tip = f" --dataset {args.dataset}" if args.dataset else ""
-            print(f"[TIP] Run on board: ssh {args.user}@{args.ip} "
-                  f"'python3 {runner} --model {args.model}{dataset_tip}'")
-        except subprocess.CalledProcessError:
-            print(f"\n[ERROR] Transfer failed. Verify SSH keys or IP address.")
+    elif args.transfer in ('scp', 'rsync'):
+        if not args.ip:
+            print(f"\n[WARN] --transfer {args.transfer} but no --ip / BOARD_IP set. "
+                  f"Skipping transfer.")
+        else:
+            remote_dest = f"{args.user}@{args.ip}:/home/{args.user}/"
+            print(f"\n{'='*70}\n >> STAGE: Transfer to Kria via "
+                  f"{args.transfer.upper()}\n{'='*70}")
+
+            ssh_opts = [
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "BatchMode=yes",
+            ]
+            if args.transfer == 'scp':
+                # BatchMode=yes prevents SSH from hanging on a missing key.
+                transfer_cmd = ["scp"] + ssh_opts + existing_files + [remote_dest]
+            else:
+                # rsync over SSH; -avz preserves attrs, archives, compresses.
+                transfer_cmd = (["rsync", "-avz", "-e", "ssh " + " ".join(ssh_opts)]
+                                + existing_files + [remote_dest])
+
+            try:
+                subprocess.run(transfer_cmd, check=True)
+                print(f"\n[SUCCESS] Model and scripts transferred to {args.ip}")
+                print(f"[TIP] Run on board: ssh {args.user}@{args.ip} "
+                      f"'python3 {runner} --model {args.model}{dataset_tip}'")
+            except subprocess.CalledProcessError:
+                print(f"\n[ERROR] Transfer failed. Verify SSH keys or IP address.")
+            except FileNotFoundError:
+                print(f"\n[ERROR] '{args.transfer}' executable not found on PATH.")
 
     total_elapsed = time.time() - pipeline_start
     print(f"\n{'#'*70}\n  PIPELINE COMPLETE in {total_elapsed/60:.2f}m\n{'#'*70}")

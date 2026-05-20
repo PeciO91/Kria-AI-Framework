@@ -1,10 +1,10 @@
 """
 Vitis AI inspection stage.
 
-Runs the Vitis AI Inspector against the prepared model to verify that every
-operator is mappable to the target DPU. Produces a textual report under
+Runs the Vitis AI Inspector against the prepared model to verify operator
+mappability to the target DPU. Produces a textual report under
 build/<model>/inspector_report/ that lists each subgraph and its assigned
-device. Fails fast if any layer would fall back to CPU.
+device. Review the report to identify any layers that would fall back to CPU.
 """
 import os
 import sys
@@ -59,8 +59,12 @@ def run_model_inspector(model_id, dataset_id):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True, help='Model ID')
-    parser.add_argument('--dataset', type=str, help='Dataset ID')
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
+    parser.add_argument('--dataset', type=str,
+                        help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
+                             'in dataset_config.py when omitted.')
     args = parser.parse_args()
 
     run_model_inspector(args.model, args.dataset)

@@ -24,25 +24,11 @@ import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageFolder
-
-# Try to import Vitis AI pruning runners (iterative + onestep)
-HAS_VITIS_PRUNER = False
-HAS_ONESTEP_PRUNER = False
-try:
-    from pytorch_nndct import IterativePruningRunner
-    HAS_VITIS_PRUNER = True
-    try:
-        from pytorch_nndct import OneStepPruningRunner
-        HAS_ONESTEP_PRUNER = True
-    except ImportError:
-        print("[WARN] OneStepPruningRunner not available in this Vitis AI build.")
-except ImportError:
-    print("[WARN] Vitis AI Optimizer (pytorch_nndct) not found.")
-    print("[INFO] Install from: https://github.com/Xilinx/Vitis-AI/tree/master/src/vai_optimizer")
-    print("[INFO] Or use: pip install pytorch_nndct from the vai_optimizer directory")
+from pytorch_nndct import IterativePruningRunner
+from pytorch_nndct import OneStepPruningRunner
 
 # Project-root import path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -55,56 +41,12 @@ from dataset_config import get_active_dataset
 from model_utils import prepare_model, derive_weight_path
 from optimizer_utils import (
     collect_model_metrics,
+    compute_metrics_for_pruned_model,
+    evaluate_accuracy,
     format_report,
     save_report_json
 )
-from detection_utils import letterbox
-
-
-# =============================================================
-# DATASET LOADERS FOR FINE-TUNING
-# =============================================================
-class SimpleImageDataset(torch.utils.data.Dataset):
-    """Flat-folder image dataset for fine-tuning."""
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.image_files = [f for f in os.listdir(root_dir)
-                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx):
-        img_name = os.path.join(self.root_dir, self.image_files[idx])
-        from PIL import Image
-        image = Image.open(img_name).convert('RGB')
-        if self.transform:
-            image = self.transform(image)
-        return image, 0  # Label unused for calibration-style fine-tuning
-
-
-class YoloCalibrationDataset(torch.utils.data.Dataset):
-    """Letterbox-based dataset for YOLO fine-tuning."""
-    def __init__(self, root_dir, input_shape, transform=None):
-        self.root_dir = root_dir
-        self.input_shape = input_shape
-        self.transform = transform
-        self.image_files = [f for f in os.listdir(root_dir)
-                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
-    def __len__(self):
-        return len(self.image_files)
-
-    def __getitem__(self, idx):
-        import cv2
-        img_path = os.path.join(self.root_dir, self.image_files[idx])
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img, _, _ = letterbox(img, new_shape=self.input_shape)
-        if self.transform:
-            img = self.transform(img)
-        return img, 0
+from dataset_utils import FlatImageDataset
 
 
 def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
@@ -123,7 +65,6 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
         # Limit to subset_len with random sampling to avoid bias from
         # alphabetical ordering (ImageFolder sorts classes by name).
         if len(dataset) > subset_len:
-            from torch.utils.data import Subset
             random.seed(42)  # Fixed seed for reproducibility
             indices = random.sample(range(len(dataset)), subset_len)
             dataset = Subset(dataset, indices)
@@ -133,13 +74,12 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
             transforms.Normalize(d_cfg['normalization']['mean'],
                                  d_cfg['normalization']['std']),
         ])
-        dataset = YoloCalibrationDataset(
+        dataset = FlatImageDataset(
             root_dir=d_cfg['calib_path'],
-            input_shape=m_cfg['input_shape'],
             transform=yolo_transform,
+            letterbox_shape=m_cfg['input_shape'],
         )
         if len(dataset) > subset_len:
-            from torch.utils.data import Subset
             indices = list(range(subset_len))
             dataset = Subset(dataset, indices)
     else:
@@ -149,9 +89,8 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
             transforms.Normalize(d_cfg['normalization']['mean'],
                                  d_cfg['normalization']['std']),
         ])
-        dataset = SimpleImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
+        dataset = FlatImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
         if len(dataset) > subset_len:
-            from torch.utils.data import Subset
             indices = list(range(subset_len))
             dataset = Subset(dataset, indices)
     
@@ -159,44 +98,9 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
 
 
 # =============================================================
-# METRICS HELPERS
-# =============================================================
-def compute_metrics_from_state_dict(state_dict, reference_metrics):
-    """Compute parameters and size from a state_dict (e.g. slim_state_dict).
-
-    GFLOPs cannot be measured without a traced model, so we scale the
-    reference GFLOPs by the parameter reduction ratio as a best-effort
-    approximation.
-    """
-    total_params = 0
-    for key, tensor in state_dict.items():
-        if hasattr(tensor, 'numel'):
-            total_params += tensor.numel()
-
-    # 4 bytes per FP32 param
-    size_mb = total_params * 4 / (1024 * 1024)
-
-    # Scale GFLOPs by the parameter ratio (approximation)
-    ref_params = reference_metrics.get('params', 0)
-    ref_gflops = reference_metrics.get('gflops', 0)
-    if ref_params > 0:
-        gflops = ref_gflops * (total_params / ref_params)
-    else:
-        gflops = ref_gflops
-
-    return {
-        'params': total_params,
-        'trainable_params': total_params,
-        'size_mb': size_mb,
-        'gflops': gflops,
-        'layer_summary': reference_metrics.get('layer_summary', []),
-    }
-
-
-# =============================================================
 # OPTIMIZER PIPELINE
 # =============================================================
-def run_sensitivity_analysis(model, runner, m_cfg, d_cfg, device, subset_len=200):
+def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
     """Run Vitis AI sensitivity analysis using IterativePruningRunner."""
     print(f"\n{'='*70}")
     print("  MODE: SENSITIVITY ANALYSIS (ana)")
@@ -210,31 +114,14 @@ def run_sensitivity_analysis(model, runner, m_cfg, d_cfg, device, subset_len=200
     
     # Build validation loader
     loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
-    
-    # Define evaluation function for sensitivity analysis
-    def eval_fn(model, dataloader):
-        """Evaluation function for Vitis AI sensitivity analysis."""
-        model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, targets in dataloader:
-                images = images.to(device)
-                targets = targets.to(device)
-                outputs = model(images)
-                if task_type == 'classification':
-                    _, predicted = outputs.max(1)
-                    total += targets.size(0)
-                    correct += predicted.eq(targets).sum().item()
-        if total > 0:
-            return 100. * correct / total
-        return 0.0
-    
+
     print(f"[INFO] Running sensitivity analysis on {len(loader.dataset)} samples...")
-    
+
     try:
-        # Run Vitis AI sensitivity analysis
-        runner.ana(eval_fn, args=(loader,))
+        # Run Vitis AI sensitivity analysis using the shared top-1 accuracy
+        # evaluator. For non-classification tasks the warning above already
+        # noted that the resulting score is approximate.
+        runner.ana(evaluate_accuracy, args=(loader,))
         print("[SUCCESS] Sensitivity analysis complete.")
         print("[INFO] Analysis results saved to .vai/ directory.")
     except Exception as e:
@@ -244,7 +131,7 @@ def run_sensitivity_analysis(model, runner, m_cfg, d_cfg, device, subset_len=200
     return runner
 
 
-def run_subnet_search(model, runner, m_cfg, d_cfg, device, ratio,
+def run_subnet_search(runner, m_cfg, d_cfg, device, ratio,
                       num_subnet=200, num_calib_forward=100, subset_len=200):
     """Run Vitis AI one-step subnet search using OneStepPruningRunner.
 
@@ -274,22 +161,6 @@ def run_subnet_search(model, runner, m_cfg, d_cfg, device, ratio,
                 if index > number_forward:
                     break
 
-    def eval_fn(m, dataloader):
-        """Evaluation function for subnet scoring."""
-        m.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for images, targets in dataloader:
-                images = images.to(device)
-                targets = targets.to(device)
-                outputs = m(images)
-                if task_type == 'classification':
-                    _, predicted = outputs.max(1)
-                    total += targets.size(0)
-                    correct += predicted.eq(targets).sum().item()
-        return 100. * correct / total if total > 0 else 0.0
-
     gpus = [str(torch.cuda.current_device())] if device.type == 'cuda' else []
 
     print(f"[INFO] Calibrating {num_subnet} candidate subnets "
@@ -300,7 +171,7 @@ def run_subnet_search(model, runner, m_cfg, d_cfg, device, ratio,
             gpus=gpus,
             calibration_fn=calibration_fn,
             calib_args=(loader,),
-            eval_fn=eval_fn,
+            eval_fn=evaluate_accuracy,
             eval_args=(loader,),
             num_subnet=num_subnet,
             removal_ratio=ratio,
@@ -335,15 +206,21 @@ def run_pruning(model, runner, m_cfg, device, ratio=0.2, before_metrics=None):
     # Apply pruning using IterativePruningRunner
     pruned_model = runner.prune(removal_ratio=ratio)
     
-    # Compute REAL after metrics from slim_state_dict (Vitis AI's structurally pruned weights)
+    # Compute after-pruning metrics. Preferred path: read slim params/size
+    # from slim_state_dict and run thop on the pruned model for real GFLOPs;
+    # falls back to a scaled estimate if the wrapper retains full shapes.
+    input_h, input_w = m_cfg['input_shape']
     if hasattr(pruned_model, 'slim_state_dict'):
         slim_sd = pruned_model.slim_state_dict()
-        after_metrics = compute_metrics_from_state_dict(slim_sd, before_metrics)
-        print(f"[INFO] After pruning (from slim_state_dict):")
+        after_metrics = compute_metrics_for_pruned_model(
+            pruned_model, slim_sd, (input_h, input_w), before_metrics
+        )
+        print(f"[INFO] After pruning (from pruned model + slim_state_dict):")
     else:
-        # Fallback to standard metric collection
-        input_h, input_w = m_cfg['input_shape']
-        after_metrics = collect_model_metrics(pruned_model, (input_h, input_w), m_cfg.get('gops'))
+        # No slim view available: profile the pruned model as-is.
+        after_metrics = collect_model_metrics(
+            pruned_model, (input_h, input_w), m_cfg.get('gops')
+        )
         print(f"[INFO] After pruning:")
     
     print(f"  Parameters: {after_metrics['params']:,.0f}")
@@ -432,7 +309,9 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
 
 def run_optimizer():
     parser = argparse.ArgumentParser(description="Vitis AI Optimizer/Pruning Pipeline")
-    parser.add_argument('--model', type=str, required=True, help='Model ID')
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
     parser.add_argument('--dataset', type=str,
                         help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
                              'in dataset_config.py when omitted.')
@@ -462,21 +341,10 @@ def run_optimizer():
                         help='Adaptive-BN calibration forward batches for one-step search')
     args = parser.parse_args()
 
-    if not HAS_VITIS_PRUNER:
-        print("[ERROR] Vitis AI Optimizer (pytorch_nndct) is required but not installed.")
-        print("[INFO] Installation instructions:")
-        print("[INFO]   cd Vitis-AI/src/vai_optimizer/pytorch_binding")
-        print("[INFO]   python setup.py install")
-        sys.exit(1)
-
-    if args.method == 'onestep' and not HAS_ONESTEP_PRUNER:
-        print("[ERROR] --method onestep requested but OneStepPruningRunner is not "
-              "available in this Vitis AI build. Falling back to --method iterative.")
-        args.method = 'iterative'
 
     # Load configurations
     m_cfg = get_active_model(args.model)
-    d_cfg = get_active_dataset(args.dataset) if args.dataset else get_active_dataset()
+    d_cfg = get_active_dataset(args.dataset)
     
     # Set device
     if args.device == 'auto':
@@ -530,12 +398,12 @@ def run_optimizer():
     if args.mode in ['ana', 'all']:
         if args.method == 'onestep':
             runner = run_subnet_search(
-                current_model, runner, m_cfg, d_cfg, device,
+                runner, m_cfg, d_cfg, device,
                 args.ratio, args.num_subnet, args.num_calib_forward, args.subset_len,
             )
         else:
             runner = run_sensitivity_analysis(
-                current_model, runner, m_cfg, d_cfg, device, args.subset_len,
+                runner, m_cfg, d_cfg, device, args.subset_len,
             )
     
     if args.mode in ['prune', 'all']:
@@ -550,9 +418,8 @@ def run_optimizer():
         # saved separately in _slim.pt for standalone use.
         pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
         slim_weight_path = derive_weight_path(m_cfg['model_path'], "_slim")
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        save_path = os.path.join(project_root, pruned_weight_path)
-        slim_path = os.path.join(project_root, slim_weight_path)
+        save_path = os.path.join(parent_dir, pruned_weight_path)
+        slim_path = os.path.join(parent_dir, slim_weight_path)
         
         torch.save(current_model.state_dict(), save_path)
         print(f"[INFO] Pruned model (full-shape state_dict) saved to: {save_path}")
@@ -568,14 +435,12 @@ def run_optimizer():
         # This avoids the brittle per-ratio .search cache requirement of onestep.
         if args.mode == 'finetune':
             pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-            save_path = os.path.join(project_root, pruned_weight_path)
+            save_path = os.path.join(parent_dir, pruned_weight_path)
             if os.path.exists(save_path):
                 print(f"[INFO] Re-applying pruning to match saved slim model structure...")
                 input_h, input_w = m_cfg['input_shape']
                 dummy_input = torch.randn([1, 3, input_h, input_w], dtype=torch.float32).to(device)
                 model.to(device)
-                from pytorch_nndct import IterativePruningRunner
                 re_slim_runner = IterativePruningRunner(model, dummy_input)
                 current_model = re_slim_runner.prune(removal_ratio=args.ratio)
                 print(f"[INFO] Loading pruned weights from: {save_path}")
@@ -593,9 +458,8 @@ def run_optimizer():
         # Re-save fine-tuned model (full state_dict + optional slim).
         pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
         slim_weight_path = derive_weight_path(m_cfg['model_path'], "_slim")
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-        save_path = os.path.join(project_root, pruned_weight_path)
-        slim_path = os.path.join(project_root, slim_weight_path)
+        save_path = os.path.join(parent_dir, pruned_weight_path)
+        slim_path = os.path.join(parent_dir, slim_weight_path)
         
         torch.save(current_model.state_dict(), save_path)
         print(f"[INFO] Fine-tuned model (full-shape state_dict) saved to: {save_path}")

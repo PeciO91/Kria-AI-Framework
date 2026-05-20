@@ -52,6 +52,9 @@ def scale_coords(img1_shape, coords, img0_shape):
     Rescale xyxy boxes from `img1_shape` (the letterboxed model input, e.g.
     640x640) back to `img0_shape` (the original image), accounting for the
     aspect-preserving padding inserted by `letterbox`.
+
+    NOTE: Mutates `coords` in place. Pass a copy if you need to preserve
+    the original array.
     """
     # Calculate scale and padding
     gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])  # gain  = old / new
@@ -95,7 +98,7 @@ def non_max_suppression(boxes, scores, conf_threshold, iou_threshold, class_ids=
         1-D int array of kept box indices (relative to the input order).
     """
     if len(boxes) == 0:
-        return []
+        return np.empty(0, dtype=np.int32)
 
     if class_ids is None:
         nms_boxes = boxes if isinstance(boxes, list) else np.asarray(boxes).tolist()
@@ -111,4 +114,4 @@ def non_max_suppression(boxes, scores, conf_threshold, iou_threshold, class_ids=
     indices = cv2.dnn.NMSBoxes(nms_boxes, scores, conf_threshold, iou_threshold)
     if len(indices) > 0:
         return indices.flatten()
-    return []
+    return np.empty(0, dtype=np.int32)

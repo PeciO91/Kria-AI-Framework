@@ -248,8 +248,12 @@ def run_segmentation(model_id, dataset_id, thread_override):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model', type=str, required=True)
-    parser.add_argument('--dataset', type=str, required=True)
+    parser.add_argument('--model', type=str,
+                        help='Model ID. Falls back to ACTIVE_MODEL_ID '
+                             'in model_config.py when omitted.')
+    parser.add_argument('--dataset', type=str,
+                        help='Dataset ID. Falls back to ACTIVE_DATASET_ID '
+                             'in dataset_config.py when omitted.')
     parser.add_argument('--threads', type=int)
     args = parser.parse_args()
 
