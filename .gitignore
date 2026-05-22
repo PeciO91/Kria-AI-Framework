@@ -20,3 +20,6 @@ results/
 .vai/
 
 docs/
+
+# Antigravity CLI workspace state
+.antigravitycli/
