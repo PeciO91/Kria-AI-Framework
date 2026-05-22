@@ -46,7 +46,8 @@ from optimizer_utils import (
     format_report,
     save_report_json
 )
-from dataset_utils import FlatImageDataset
+from dataset_utils import FlatImageDataset, YoloDataset, yolo_collate_fn, build_or_load_subset_indices
+from detection_profiles import get_profile
 
 
 def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
@@ -74,14 +75,19 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
             transforms.Normalize(d_cfg['normalization']['mean'],
                                  d_cfg['normalization']['std']),
         ])
-        dataset = FlatImageDataset(
-            root_dir=d_cfg['calib_path'],
-            transform=yolo_transform,
-            letterbox_shape=m_cfg['input_shape'],
+        subset_indices = build_or_load_subset_indices(
+            split="train",
+            n=subset_len,
+            cache_dir=d_cfg['subset_cache_dir']
         )
-        if len(dataset) > subset_len:
-            indices = list(range(subset_len))
-            dataset = Subset(dataset, indices)
+        dataset = YoloDataset(
+            images_dir=d_cfg['images_train'],
+            labels_dir=d_cfg['labels_train'],
+            input_shape=m_cfg['input_shape'],
+            normalization=d_cfg['normalization'],
+            augment=True, # Apply augmentations during fine-tuning!
+            indices=subset_indices
+        )
     else:
         base_transform = transforms.Compose([
             transforms.Resize(m_cfg['input_shape']),
@@ -94,7 +100,8 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
             indices = list(range(subset_len))
             dataset = Subset(dataset, indices)
     
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    collate_fn = yolo_collate_fn if task_type == 'detection' else None
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
 
 # =============================================================
@@ -108,24 +115,68 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
     
     task_type = m_cfg.get('type', 'classification')
     
-    if task_type != 'classification':
-        print(f"[WARN] Sensitivity analysis is only fully supported for classification in v1.")
-        print(f"[INFO] Running analysis on {task_type} model - results may be limited.")
-    
-    # Build validation loader
-    loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
+    # Build validation loader based on task type
+    if task_type == 'detection':
+        print("[INFO] Constructing COCO val set for detection sensitivity analysis.")
+        subset_indices = build_or_load_subset_indices(
+            split="val",
+            n=subset_len,
+            cache_dir=d_cfg['subset_cache_dir']
+        )
+        val_dataset = YoloDataset(
+            images_dir=d_cfg['images_val'],
+            labels_dir=d_cfg['labels_val'],
+            input_shape=m_cfg['input_shape'],
+            normalization=d_cfg['normalization'],
+            augment=False,
+            indices=subset_indices
+        )
+        loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=yolo_collate_fn)
+    else:
+        loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
 
     print(f"[INFO] Running sensitivity analysis on {len(loader.dataset)} samples...")
 
+    # Define evaluation function
+    if task_type == 'detection':
+        def detection_loss_eval(model, dataloader):
+            device_local = next(model.parameters()).device
+            profile = get_profile(m_cfg)
+            loss_fn = profile.loss_fn(model)
+            total_loss = 0.0
+            count = 0
+            was_training = model.training
+            model.train() # Enable training output format for loss calculation
+            try:
+                with torch.no_grad():
+                    for images, targets in dataloader:
+                        images = images.to(device_local)
+                        targets = {k: v.to(device_local) if isinstance(v, torch.Tensor) else v for k, v in targets.items()}
+                        outputs = model(images)
+                        loss_val = loss_fn(outputs, targets)
+                        if isinstance(loss_val, dict):
+                            loss_val = sum(l for l in loss_val.values())
+                        elif isinstance(loss_val, (list, tuple)):
+                            loss_val = sum(loss_val)
+                        total_loss += loss_val.item()
+                        count += 1
+            finally:
+                if not was_training:
+                    model.eval()
+            return -(total_loss / max(1, count)) # Negative loss: higher (closer to 0) is better
+        
+        eval_fn = detection_loss_eval
+    else:
+        eval_fn = evaluate_accuracy
+
     try:
-        # Run Vitis AI sensitivity analysis using the shared top-1 accuracy
-        # evaluator. For non-classification tasks the warning above already
-        # noted that the resulting score is approximate.
-        runner.ana(evaluate_accuracy, args=(loader,))
+        runner.ana(eval_fn, args=(loader,))
         print("[SUCCESS] Sensitivity analysis complete.")
         print("[INFO] Analysis results saved to .vai/ directory.")
     except Exception as e:
+        import traceback
         print(f"[ERROR] Sensitivity analysis failed: {e}")
+        traceback.print_exc()
         print("[INFO] Continuing with pruning using specified ratio...")
     
     return runner
@@ -166,21 +217,57 @@ def run_subnet_search(runner, m_cfg, d_cfg, device, ratio,
     print(f"[INFO] Calibrating {num_subnet} candidate subnets "
           f"({len(loader.dataset)} samples, {num_calib_forward} BN-calib batches)...")
 
+    # Define evaluation function and excludes for search
+    if task_type == 'detection':
+        profile = get_profile(m_cfg)
+        excludes = profile.prune_excludes(None)
+        def detection_loss_eval(model, dataloader):
+            device_local = next(model.parameters()).device
+            loss_fn = profile.loss_fn(model)
+            total_loss = 0.0
+            count = 0
+            was_training = model.training
+            model.train()
+            try:
+                with torch.no_grad():
+                    for images, targets in dataloader:
+                        images = images.to(device_local)
+                        targets = {k: v.to(device_local) if isinstance(v, torch.Tensor) else v for k, v in targets.items()}
+                        outputs = model(images)
+                        loss_val = loss_fn(outputs, targets)
+                        if isinstance(loss_val, dict):
+                            loss_val = sum(l for l in loss_val.values())
+                        elif isinstance(loss_val, (list, tuple)):
+                            loss_val = sum(loss_val)
+                        total_loss += loss_val.item()
+                        count += 1
+            finally:
+                if not was_training:
+                    model.eval()
+            return -(total_loss / max(1, count))
+        
+        eval_fn = detection_loss_eval
+    else:
+        eval_fn = evaluate_accuracy
+        excludes = []
+
     try:
         runner.search(
             gpus=gpus,
             calibration_fn=calibration_fn,
             calib_args=(loader,),
-            eval_fn=evaluate_accuracy,
+            eval_fn=eval_fn,
             eval_args=(loader,),
             num_subnet=num_subnet,
             removal_ratio=ratio,
-            excludes=[],
+            excludes=excludes,
         )
         print("[SUCCESS] Subnet search complete.")
         print(f"[INFO] Search result saved to .vai/ directory.")
     except Exception as e:
+        import traceback
         print(f"[ERROR] Subnet search failed: {e}")
+        traceback.print_exc()
         print("[INFO] Continuing with pruning using specified ratio...")
 
     return runner
@@ -203,8 +290,16 @@ def run_pruning(model, runner, m_cfg, device, ratio=0.2, before_metrics=None):
     
     print(f"[INFO] Applying structural pruning with removal_ratio {ratio}...")
     
-    # Apply pruning using IterativePruningRunner
-    pruned_model = runner.prune(removal_ratio=ratio)
+    # Retrieve excludes if task type is detection
+    task_type = m_cfg.get('type', 'classification')
+    excludes = []
+    if task_type == 'detection':
+        profile = get_profile(m_cfg)
+        excludes = profile.prune_excludes(model)
+        print(f"[INFO] Excluding layers from pruning: {excludes}")
+        
+    # Apply pruning using IterativePruningRunner with excludes
+    pruned_model = runner.prune(removal_ratio=ratio, excludes=excludes)
     
     # Compute after-pruning metrics. Preferred path: read slim params/size
     # from slim_state_dict and run thop on the pruned model for real GFLOPs;
@@ -243,8 +338,8 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
     
     task_type = m_cfg.get('type', 'classification')
     
-    if task_type != 'classification':
-        print(f"[WARN] Fine-tuning is only implemented for classification in v1.")
+    if task_type not in ['classification', 'detection']:
+        print(f"[WARN] Fine-tuning is only implemented for classification and detection.")
         print(f"[INFO] Skipping fine-tuning for {task_type} model.")
         print(f"[INFO] Model is pruned but weights are not retrained.")
         return model
@@ -252,13 +347,21 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
     # Build train loader
     train_loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
     
-    # Define loss and optimizer
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+    # Define loss and optimizer based on task type
+    if task_type == 'classification':
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
+        print(f"[INFO] Optimizer: SGD (lr={lr}, momentum=0.9, weight_decay=1e-4)")
+    elif task_type == 'detection':
+        profile = get_profile(m_cfg)
+        profile.prepare_for_finetune(model)
+        criterion = profile.loss_fn(model)
+        # YOLO works much better with AdamW for fine-tuning
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        print(f"[INFO] Optimizer: AdamW (lr={lr}, weight_decay=1e-4)")
+        
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    
     print(f"[INFO] Fine-tuning on {len(train_loader.dataset)} samples...")
-    print(f"[INFO] Optimizer: SGD (lr={lr}, momentum=0.9, weight_decay=1e-4)")
     print(f"[INFO] Scheduler: CosineAnnealingLR")
     
     best_loss = float('inf')
@@ -271,15 +374,28 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
         
         for batch_idx, (images, labels) in enumerate(train_loader):
             images = images.to(device)
-            labels = labels.to(device)
             
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
+            if task_type == 'classification':
+                labels = labels.to(device)
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            elif task_type == 'detection':
+                targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in labels.items()}
+                outputs = profile.forward_for_loss(model, images)
+                loss = criterion(outputs, targets)
+                
+            if isinstance(loss, dict):
+                loss_val = sum(l for l in loss.values())
+            elif isinstance(loss, (list, tuple)):
+                loss_val = sum(loss)
+            else:
+                loss_val = loss
+                
+            loss_val.backward()
             optimizer.step()
             
-            epoch_loss += loss.item()
+            epoch_loss += loss_val.item()
             
             if task_type == 'classification':
                 _, predicted = outputs.max(1)
@@ -288,12 +404,12 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
             
             if batch_idx % 10 == 0:
                 print(f"  Epoch {epoch+1}/{epochs} [{batch_idx}/{len(train_loader)}] "
-                      f"Loss: {loss.item():.4f}")
+                      f"Loss: {loss_val.item():.4f}")
         
         avg_loss = epoch_loss / len(train_loader)
         scheduler.step()
         
-        if total > 0:
+        if task_type == 'classification' and total > 0:
             accuracy = 100. * correct / total
             print(f"  Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}, Acc: {accuracy:.2f}%")
         else:

@@ -124,7 +124,13 @@ MODELS = {
         "reg_max": 1,
         "end2end": True,
         "max_det": 300,
-        "strides": [8, 16, 32]
+        "strides": [8, 16, 32],
+        "prune_excludes": [
+            "model.24.cv2.*.2",
+            "model.24.cv3.*.2",
+            "model.24.one2one_cv2.*.2",
+            "model.24.one2one_cv3.*.2"
+        ]
     },
     "unet_res18": {
         "source": "custom",

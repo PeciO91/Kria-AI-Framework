@@ -193,7 +193,10 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
         input_h, input_w = m_cfg['input_shape']
         dummy_input = torch.randn([1, 3, input_h, input_w], dtype=torch.float32).to(device)
         runner = IterativePruningRunner(model, dummy_input)
-        model = runner.prune(removal_ratio=prune_threshold)
+        excludes = m_cfg.get('prune_excludes', [])
+        if excludes:
+            print(f"[INFO] Retaining excluded layers during reconstruction: {excludes}")
+        model = runner.prune(removal_ratio=prune_threshold, excludes=excludes)
         target_weight_path = pruned_weight_path
         pruning_applied = True
     elif prune_threshold is not None and not os.path.exists(abs_pruned_path):

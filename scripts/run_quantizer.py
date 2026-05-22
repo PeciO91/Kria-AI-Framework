@@ -35,8 +35,9 @@ if parent_dir not in sys.path:
 from model_config import get_active_model
 from dataset_config import get_active_dataset
 from model_utils import prepare_model
-from dataset_utils import FlatImageDataset
+from dataset_utils import FlatImageDataset, YoloDataset, yolo_collate_fn, build_or_load_subset_indices
 from optimizer_utils import evaluate_loss
+from detection_profiles import get_profile
 
 
 def parse_args():
@@ -54,6 +55,34 @@ def parse_args():
     parser.add_argument('--fast_ft', action='store_true',
                         help='Enable AdaQuant fast fine-tuning')
     return parser.parse_args()
+
+
+def evaluate_detection_loss(model, dataloader, loss_fn, device=None):
+    """
+    Evaluates detection loss over a dataloader. Used for AdaQuant fast fine-tuning
+    of detection models. Ensured model outputs training formats for correct loss evaluation.
+    """
+    if device is None:
+        device = next(model.parameters()).device
+    total_loss = 0.0
+    was_training = model.training
+    model.train() # Must be in training mode to output both branches (one2one/one2many) for loss
+    try:
+        with torch.no_grad():
+            for images, targets in dataloader:
+                images = images.to(device)
+                targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in targets.items()}
+                outputs = model(images)
+                loss_val = loss_fn(outputs, targets)
+                if isinstance(loss_val, dict):
+                    loss_val = sum(l for l in loss_val.values())
+                elif isinstance(loss_val, (list, tuple)):
+                    loss_val = sum(loss_val)
+                total_loss += loss_val.item()
+    finally:
+        if not was_training:
+            model.eval()
+    return total_loss
 
 
 # =============================================================
@@ -93,23 +122,28 @@ def run_quantization(args):
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
     elif task_type == 'detection':
-        print("[INFO] Using YOLO Letterbox loader for detection calibration.")
-        # Letterbox handles the resize; only ToTensor + Normalize remain.
+        print("[INFO] Using COCO Labeled dataset loader for detection calibration.")
         yolo_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(d_cfg['normalization']['mean'],
                                  d_cfg['normalization']['std']),
         ])
-        dataset = FlatImageDataset(
-            root_dir=d_cfg['calib_path'],
-            transform=yolo_transform,
-            letterbox_shape=m_cfg['input_shape'],
+        
+        # Load cached or newly built subset indices
+        subset_indices = build_or_load_subset_indices(
+            split="calib",
+            n=actual_subset_len,
+            cache_dir=d_cfg['subset_cache_dir']
         )
-        # Random sampling for detection calibration as well.
-        if len(dataset) > actual_subset_len:
-            random.seed(42)
-            indices = random.sample(range(len(dataset)), actual_subset_len)
-            dataset = Subset(dataset, indices)
+        
+        dataset = YoloDataset(
+            images_dir=d_cfg['images_train'],
+            labels_dir=d_cfg['labels_train'],
+            input_shape=m_cfg['input_shape'],
+            normalization=d_cfg['normalization'],
+            augment=False,
+            indices=subset_indices
+        )
     else:
         print(f"[INFO] Using flat-folder image loader for {task_type} task.")
         dataset = FlatImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
@@ -119,7 +153,8 @@ def run_quantization(args):
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
 
-    loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False)
+    collate_fn = yolo_collate_fn if task_type == 'detection' else None
+    loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False, collate_fn=collate_fn)
     input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn([1, 3, input_h, input_w]).to(device)
 
@@ -127,15 +162,20 @@ def run_quantization(args):
         args.quant_mode, model, (dummy_input,), device=device, output_dir=output_dir)
     quant_model = quantizer.quant_model
 
-    # Optional AdaQuant fast fine-tuning. Only available for classification.
+    # Optional AdaQuant fast fine-tuning. Supported for classification and detection.
     if args.fast_ft:
-        if task_type != 'classification':
-            print(f"[WARN] --fast_ft is currently only wired for classification "
+        if task_type not in ['classification', 'detection']:
+            print(f"[WARN] --fast_ft is currently only wired for classification and detection "
                   f"(task='{task_type}'). Skipping AdaQuant.")
         elif args.quant_mode == 'calib':
             print("[INFO] Phase 1: Running Fast Fine-Tuning (AdaQuant)...")
-            loss_fn = torch.nn.CrossEntropyLoss()
-            quantizer.fast_finetune(evaluate_loss, (quant_model, loader, loss_fn))
+            if task_type == 'classification':
+                loss_fn = torch.nn.CrossEntropyLoss()
+                quantizer.fast_finetune(evaluate_loss, (quant_model, loader, loss_fn))
+            elif task_type == 'detection':
+                profile = get_profile(m_cfg)
+                loss_fn = profile.loss_fn(quant_model)
+                quantizer.fast_finetune(evaluate_detection_loss, (quant_model, loader, loss_fn))
         else:
             print("[INFO] Phase 2: Loading Fine-Tuned parameters...")
             quantizer.load_ft_param()
@@ -144,7 +184,8 @@ def run_quantization(args):
     print("[INFO] Processing forward pass...")
     processed_count = 0
     with torch.no_grad():
-        for images, _ in loader:
+        for batch in loader:
+            images = batch[0] if isinstance(batch, (tuple, list)) else batch
             images = images.to(device)
             quant_model(images)
             processed_count += images.size(0)

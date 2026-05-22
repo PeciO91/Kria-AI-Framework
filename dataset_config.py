@@ -42,10 +42,13 @@ DATASETS = {
         }
     },
     "coco_detection": {
-        "name": "COCO Detection Calibration",
+        "name": "COCO Detection (YOLO format)",
         "folder_name": "coco",
-        # Point this to a folder containing ~200 images from your detection dataset
-        "calib_path": "data/coco/calibration_data",
+        "images_train": "data/coco/images/train",
+        "images_val": "data/coco/images/val",
+        "labels_train": "data/coco/labels/train",
+        "labels_val": "data/coco/labels/val",
+        "subset_cache_dir": "data/coco/.subsets",
         "classes": [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
             "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
