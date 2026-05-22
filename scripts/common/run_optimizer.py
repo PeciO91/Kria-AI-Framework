@@ -30,11 +30,8 @@ from torchvision.datasets import ImageFolder
 from pytorch_nndct import IterativePruningRunner
 from pytorch_nndct import OneStepPruningRunner
 
-# Project-root import path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(current_dir, '..'))
-if parent_dir not in sys.path:
-    sys.path.insert(0, parent_dir)
+# Project-root import path (PROJECT_ROOT + scripts/common/ added to sys.path).
+from _bootstrap import PROJECT_ROOT  # noqa: F401
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset

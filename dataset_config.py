@@ -43,12 +43,14 @@ DATASETS = {
     },
     "coco_detection": {
         "name": "COCO Detection (YOLO format)",
-        "folder_name": "coco",
-        "images_train": "data/coco/images/train",
-        "images_val": "data/coco/images/val",
-        "labels_train": "data/coco/labels/train",
-        "labels_val": "data/coco/labels/val",
-        "subset_cache_dir": "data/coco/.subsets",
+        "folder_name": "coco2017",
+        "images_train": "data/coco2017/train2017",
+        "images_val": "data/coco2017/val2017",
+        # YOLO-format labels (one .txt per image). If absent, calibration still
+        # works (forward-pass only); training / mAP eval would need them.
+        "labels_train": "data/coco2017/labels/train2017",
+        "labels_val": "data/coco2017/labels/val2017",
+        "subset_cache_dir": "data/coco2017/.subsets",
         "classes": [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
             "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",

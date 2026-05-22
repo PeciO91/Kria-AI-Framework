@@ -12,7 +12,43 @@ import numpy as np
 from PIL import Image
 import torch
 
-from detection_utils import letterbox
+def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
+    """
+    Aspect-preserving resize with constant padding (YOLO-style letterbox).
+
+    Lives in dataset_utils because it is used by both calibration-time
+    preprocessing (this module's YOLO datasets) and on-board detection
+    preprocessing (``scripts/detection/detection_utils.py`` re-exports it).
+    Keep this implementation as the single source of truth.
+
+    Returns the padded image, the (rw, rh) scale ratios, and the (dw, dh)
+    padding applied to each side.
+    """
+    shape = img.shape[:2]  # current shape [height, width]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+
+    # Compute padding
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    if shape[::-1] != new_unpad:  # resize
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+    # Add border
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+
+    return img, ratio, (dw, dh)
 
 
 class FlatImageDataset(torch.utils.data.Dataset):
@@ -92,7 +128,7 @@ class YoloDataset(torch.utils.data.Dataset):
         target_h, target_w = self.input_shape
 
         # 1. Letterbox resizing to target_shape
-        letterboxed, ratio, (dw, dh) = letterbox(img, new_shape=self.input_shape, auto=False)
+        letterboxed, ratio, (dw, dh) = letterbox(img, new_shape=self.input_shape)
         r = ratio[0]  # scale ratio
 
         # 2. Parse labels from matching .txt file

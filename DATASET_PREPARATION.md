@@ -183,5 +183,5 @@ Once your dataset has been structured, register it in `dataset_config.py` under 
 
 Now you can invoke the pipeline commands by passing your custom dataset ID:
 ```bash
-python3 scripts/run_quantizer.py --model yolov26s --dataset my_custom_dataset --quant_mode calib
+python3 scripts/common/run_quantizer.py --model yolov26s --dataset my_custom_dataset --quant_mode calib
 ```

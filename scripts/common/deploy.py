@@ -16,13 +16,8 @@ import subprocess
 import argparse
 import time
 
-# Project-root import path
-SCRIPT_ROOT = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_ROOT, '..'))
-if SCRIPT_ROOT not in sys.path:
-    sys.path.insert(0, SCRIPT_ROOT)
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# Project-root import path (PROJECT_ROOT + scripts/common/ added to sys.path).
+from _bootstrap import PROJECT_ROOT, SCRIPTS_ROOT, COMMON_DIR
 
 from model_config import get_active_model, ACTIVE_MODEL_ID
 try:
@@ -32,14 +27,42 @@ except ImportError:
     BOARD_USER = "root"
 
 
-def get_script_path(script_name):
-    """Resolve a stage script regardless of where deploy.py was invoked from."""
-    for candidate in (os.path.join(SCRIPT_ROOT, script_name),
-                      os.path.join(PROJECT_ROOT, "scripts", script_name)):
+# Task-type -> sub-folder under scripts/ that holds the on-board runner +
+# any task-only helpers. Host-side stages (inspector, quantizer, optimizer,
+# compiler) always live in scripts/common/ regardless of task.
+TASK_DIRS = {
+    "classification": os.path.join(SCRIPTS_ROOT, "classification"),
+    "detection":      os.path.join(SCRIPTS_ROOT, "detection"),
+    "segmentation":   os.path.join(SCRIPTS_ROOT, "segmentation"),
+}
+
+
+def get_script_path(script_name, task=None):
+    """Resolve a stage / runner script across the split layout.
+
+    Search order:
+      1. ``scripts/common/`` (task-agnostic stages & utilities)
+      2. ``scripts/<task>/`` if ``task`` is given (task-specific runner)
+      3. every ``scripts/<task>/`` folder as a last-resort fallback
+    """
+    candidates = [os.path.join(COMMON_DIR, script_name)]
+    if task and task in TASK_DIRS:
+        candidates.append(os.path.join(TASK_DIRS[task], script_name))
+    candidates.extend(os.path.join(d, script_name) for d in TASK_DIRS.values())
+    for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
     print(f"[ERROR] Could not find {script_name}")
     sys.exit(1)
+
+
+# Per-task board-side payloads. ``board_utils.py`` is always included by the
+# common-folder payload below; these lists hold only the task-specific files.
+TASK_BOARD_FILES = {
+    "classification": ["run_inference.py"],
+    "detection":      ["run_detection.py", "detection_utils.py"],
+    "segmentation":   ["run_segmentation.py"],
+}
 
 
 def get_project_file(file_name):
@@ -144,22 +167,31 @@ def main():
         "Compilation"):
         return
 
-    # 6. Transfer to Kria board (xmodel + all board-side scripts)
+    # 6. Transfer to Kria board (xmodel + only the runner files relevant to
+    # this task). board_utils.py is shared by every runner; the per-task
+    # files come from TASK_BOARD_FILES.
+    task_type = m_cfg.get("type", "classification")
+    task_files = TASK_BOARD_FILES.get(task_type, TASK_BOARD_FILES["classification"])
+
     transfer_payload = [
         os.path.join(PROJECT_ROOT, "build", build_dir_name, "compiled",
                      f"{args.model}_kria.xmodel"),
-        get_script_path("run_inference.py"),
-        get_script_path("run_detection.py"),
-        get_script_path("run_segmentation.py"),
-        get_script_path("detection_utils.py"),
         get_script_path("board_utils.py"),
         get_project_file("model_config.py"),
         get_project_file("dataset_config.py"),
         get_project_file("board_config.py"),
     ]
+    for name in task_files:
+        transfer_payload.append(get_script_path(name, task=task_type))
     existing_files = [f for f in transfer_payload if os.path.exists(f)]
 
-    runner = "run_detection.py" if m_cfg.get("type") == "detection" else "run_inference.py"
+    # Pick the runner filename that the user should invoke on the board.
+    task_runner_map = {
+        "classification": "run_inference.py",
+        "detection":      "run_detection.py",
+        "segmentation":   "run_segmentation.py",
+    }
+    runner = task_runner_map.get(task_type, "run_inference.py")
     dataset_tip = f" --dataset {args.dataset}" if args.dataset else ""
 
     if args.transfer == 'none':

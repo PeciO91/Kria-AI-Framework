@@ -1,51 +1,25 @@
 """
-Detection-specific math helpers shared by the calibration loader and the
-on-board runner.
+Detection-specific post-processing helpers shared by the on-board runner.
 
-  - letterbox:             aspect-preserving resize with constant padding.
   - scale_coords:          map xyxy boxes from the letterboxed image space
                            back to the original image.
   - non_max_suppression:   thin wrapper over cv2.dnn.NMSBoxes with optional
                            per-class suppression via the class-offset trick.
+
+``letterbox`` lives in ``scripts/common/dataset_utils.py`` (single source of
+truth, since it is used by both calibration preprocessing and detection
+preprocessing). It is re-exported here for backward-compatible board-side
+imports such as ``from detection_utils import letterbox``.
 """
 import cv2
 import numpy as np
 
+try:
+    # Host-side: dataset_utils sits next to this file on sys.path.
+    from dataset_utils import letterbox  # noqa: F401
+except ImportError:  # pragma: no cover - board-side fallback
+    letterbox = None  # type: ignore
 
-def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
-    """
-    Resize `img` into `new_shape` while preserving aspect ratio and padding
-    the remainder with a solid color.
-
-    Returns the padded image, the (rw, rh) scale ratios, and the (dw, dh)
-    padding applied to each side.
-    """
-    shape = img.shape[:2]  # current shape [height, width]
-    if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
-
-    # Scale ratio (new / old)
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-
-    # Compute padding
-    ratio = r, r  # width, height ratios
-    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
-
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
-
-    if shape[::-1] != new_unpad:  # resize
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-    
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    
-    # Add border
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
-    
-    # Return image, the scale ratio, and the padding used
-    return img, ratio, (dw, dh)
 
 def scale_coords(img1_shape, coords, img0_shape):
     """

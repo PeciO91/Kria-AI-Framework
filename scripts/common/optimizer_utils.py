@@ -248,7 +248,7 @@ def evaluate_accuracy(model, dataloader, device=None):
     signature ``(model, dataloader)`` and expect a higher-is-better scalar.
 
     For non-classification tasks the dataloader's targets are typically dummy
-    zeros (see scripts/dataset_utils.py) and the returned number is
+    zeros (see scripts/common/dataset_utils.py) and the returned number is
     meaningless; callers should gate on ``m_cfg['type']`` before relying on
     the result.
 

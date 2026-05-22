@@ -20,9 +20,9 @@ import torchvision.models as models
 
 from pytorch_nndct import IterativePruningRunner
 
-# Compute project paths once at module load time
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.abspath(os.path.join(script_dir, '..'))
+# Compute project paths once at module load time (sourced from _bootstrap so
+# the value is correct regardless of the moving target file location).
+from _bootstrap import PROJECT_ROOT as project_root, COMMON_DIR as script_dir
 
 
 def normalize_path(path):
@@ -38,6 +38,43 @@ def add_repo_to_syspath(repo_path):
     if repo_path in sys.path:
         sys.path.remove(repo_path)
     sys.path.insert(0, repo_path)
+
+
+def _ensure_pandas_importable():
+    """Make ``import pandas`` succeed before loading YOLOv5.
+
+    In the Vitis AI PyTorch Docker on WSL2, ``import torch`` can pin an older
+    system libstdc++ that breaks ``import pandas`` with a ``GLIBCXX_3.4.29``
+    error. YOLOv5 imports pandas at module top in several files
+    (``utils/general.py``, ``utils/plots.py``, ``models/common.py``) but only
+    *uses* it inside training / plotting / ``.pandas()`` result paths that the
+    DPU deployment flow never executes. If real pandas fails to import, we
+    inject a minimal stub into ``sys.modules['pandas']`` that satisfies the
+    import-time attribute access (``pd.options.display.max_columns = N``) and
+    leaves runtime ``pd.DataFrame`` / ``pd.read_csv`` calls as no-ops.
+    """
+    try:
+        import pandas  # noqa: F401
+        return
+    except ImportError:
+        pass
+    import types as _types
+
+    stub = _types.ModuleType('pandas')
+
+    class _Display:
+        max_columns = None
+
+    class _Options:
+        display = _Display()
+
+    stub.options = _Options()
+    stub.DataFrame = lambda *a, **kw: None
+    stub.read_csv = lambda *a, **kw: None
+    stub.notna = lambda x: True
+    sys.modules['pandas'] = stub
+    print("[WARN] pandas import failed; injected a stub for YOLOv5 compatibility. "
+          "Training / .pandas() result paths will not work.")
 
 
 def clear_module_tree(root_names):
@@ -125,6 +162,7 @@ def load_model_skeleton(m_cfg):
             raise FileNotFoundError(f"YAML config not found at: {cfg_path}")
 
         clear_module_tree(('models', 'utils'))
+        _ensure_pandas_importable()
         from models.yolo import Model
         return Model(cfg=cfg_path)
 
