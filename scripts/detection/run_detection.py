@@ -310,27 +310,66 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
     all_class_ids = []
     expected_channels = (4 * reg_max) + num_classes
 
-    for level, src_idx in enumerate(output_order):
-        stage_start = _profile_start(profiler)
-        pred_int8 = _as_nhwc(int8_outputs[src_idx], expected_channels)
-        _profile_end(profiler, "decode_ultra_layout", stage_start)
-        bs, ny, nx, channels = pred_int8.shape
-        if channels != expected_channels:
+    # Group tensors by spatial size (ny*nx)
+    spatial_groups = {}
+    for src_idx in output_order:
+        tensor = int8_outputs[src_idx]
+        ny, nx = tensor.shape[1:3] if tensor.ndim == 4 else (tensor.shape[0], tensor.shape[1])
+        spatial_size = ny * nx
+        if spatial_size not in spatial_groups:
+            spatial_groups[spatial_size] = []
+        spatial_groups[spatial_size].append(src_idx)
+
+    # Process each spatial group (level)
+    for spatial_size, indices in spatial_groups.items():
+        if len(indices) == 1:
+            # Fused output (channels == 84)
+            src_idx = indices[0]
+            pred_int8 = _as_nhwc(int8_outputs[src_idx], expected_channels)
+            bs, ny, nx, channels = pred_int8.shape
+            if channels != expected_channels:
+                continue
+            scale = dequant_scales[src_idx]
+            pred_int8_2d = pred_int8.reshape(-1, channels)
+            
+            box_int8 = pred_int8_2d[:, :4 * reg_max]
+            cls_int8 = pred_int8_2d[:, 4 * reg_max:]
+            box_scale = scale
+            cls_scale = scale
+            
+        elif len(indices) == 2:
+            # Split outputs (box_head and cls_head)
+            idx1, idx2 = indices
+            t1 = _as_nhwc(int8_outputs[idx1], None)
+            t2 = _as_nhwc(int8_outputs[idx2], None)
+            
+            # Identify which is box (4*reg_max channels) and which is cls (num_classes channels)
+            if t1.shape[-1] == 4 * reg_max and t2.shape[-1] == num_classes:
+                box_idx, cls_idx = idx1, idx2
+                box_t, cls_t = t1, t2
+            elif t2.shape[-1] == 4 * reg_max and t1.shape[-1] == num_classes:
+                box_idx, cls_idx = idx2, idx1
+                box_t, cls_t = t2, t1
+            else:
+                continue
+            
+            bs, ny, nx, _ = box_t.shape
+            box_scale = dequant_scales[box_idx]
+            cls_scale = dequant_scales[cls_idx]
+            
+            box_int8 = box_t.reshape(-1, 4 * reg_max)
+            cls_int8 = cls_t.reshape(-1, num_classes)
+        else:
             continue
-
-        scale = dequant_scales[src_idx]
-
-        # 1. Threshold in INT8 space: avoid dequantizing every anchor.
-        #    logit > logit_thresh  <=>  int8 > ceil(logit_thresh / scale).
+        # 1. Threshold in INT8 space using the cls tensor
+        #    logit > logit_thresh  <=>  int8 > ceil(logit_thresh / cls_scale).
         stage_start = _profile_start(profiler)
         if np.isinf(logit_thresh):
             int8_thresh = -129 if logit_thresh < 0 else 127
         else:
-            int8_thresh = int(np.ceil(logit_thresh / scale))
+            int8_thresh = int(np.ceil(logit_thresh / cls_scale))
         int8_thresh = max(-129, min(127, int8_thresh))
 
-        pred_int8_2d = pred_int8.reshape(-1, channels)
-        cls_int8 = pred_int8_2d[:, 4 * reg_max:]
         best_int8 = cls_int8.max(axis=1)
         mask = best_int8 > int8_thresh
         _profile_end(profiler, "decode_ultra_threshold", stage_start)
@@ -339,8 +378,7 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
 
         # 2. Full dequant only for survivors.
         stage_start = _profile_start(profiler)
-        survivors = pred_int8_2d[mask].astype(np.float32) * scale
-        cls_logits = survivors[:, 4 * reg_max:]
+        cls_logits = cls_int8[mask].astype(np.float32) * cls_scale
         _profile_end(profiler, "decode_ultra_dequant", stage_start)
 
         # 3. argmax on logits is equivalent to argmax on probs; compute
@@ -352,7 +390,7 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
         _profile_end(profiler, "decode_ultra_class_score", stage_start)
 
         stage_start = _profile_start(profiler)
-        box_raw = survivors[:, :4 * reg_max]
+        box_raw = box_int8[mask].astype(np.float32) * box_scale
         if reg_max > 1:
             box_dist = (_softmax_last(box_raw.reshape(-1, 4, reg_max)) *
                         np.arange(reg_max, dtype=np.float32)).sum(axis=-1)
@@ -361,12 +399,23 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
 
         # 4. Indexed anchor lookup. With bs=1 the mask length matches the
         #    flat anchor grid (ny*nx) directly; no tile required.
-        base_anchors = cache.anchors(level, ny, nx)  # (ny*nx, 2)
+        # To correctly get the level index for anchors and strides,
+        # we can determine it from the spatial size since cache strides are mapped 1-to-1.
+        level_idx = None
+        for i, s in enumerate(cache.strides):
+            if (640 // s) * (640 // s) == ny * nx:
+                level_idx = i
+                break
+        if level_idx is None:
+            # Fallback (should not happen)
+            level_idx = 0
+
+        base_anchors = cache.anchors(level_idx, ny, nx)  # (ny*nx, 2)
         if bs == 1:
             anchors = base_anchors[mask]
         else:
             anchors = np.tile(base_anchors, (bs, 1))[mask]
-        stride = cache.strides[level]
+        stride = cache.strides[level_idx]
 
         x1 = (anchors[:, 0] - box_dist[:, 0]) * stride
         y1 = (anchors[:, 1] - box_dist[:, 1]) * stride
@@ -654,6 +703,18 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
             print(f"[ERROR] Model {model_id} is missing 'anchors' / 'strides' in model_config.py.")
             sys.exit(1)
 
+    model_path = f"{model_id}_kria.xmodel"
+    dataset_path = os.path.join("datasets", d_cfg['folder_name'])
+    out_dir = f"outputs_{model_id}"
+    if save_outputs:
+        os.makedirs(out_dir, exist_ok=True)
+
+    try:
+        subgraph, dpu_shape, fix_pos_in, fix_pos_outs = setup_dpu(model_path)
+    except Exception as e:
+        print(f"[ERROR] Failed to load model {model_path}: {e}")
+        return
+
     # Build normalization LUT once and share across producers (read-only, thread-safe).
     lut = build_norm_lut(d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in)
 
@@ -662,12 +723,6 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
     # LUT normalization removes the producer bottleneck.
     num_consumers = thread_override if thread_override else ACTIVE_THREADS
     num_producers = producers_override if producers_override is not None else 4
-
-    model_path = f"{model_id}_kria.xmodel"
-    dataset_path = os.path.join("datasets", d_cfg['folder_name'])
-    out_dir = f"outputs_{model_id}"
-    if save_outputs:
-        os.makedirs(out_dir, exist_ok=True)
 
     print(f"\n[INFO] Starting YOLO Detection Pipeline")
     print(f"       Model:    {m_cfg['name']}")
@@ -679,12 +734,6 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
     print(f"       Output:   {out_dir}/" if save_outputs else "       Output:   disabled")
     if profile_enabled:
         print(f"       Profile:  enabled")
-
-    try:
-        subgraph, dpu_shape, fix_pos_in, fix_pos_outs = setup_dpu(model_path)
-    except Exception as e:
-        print(f"[ERROR] Failed to load model {model_path}: {e}")
-        return
 
     # Output-tensor permutation is fixed for a given xmodel: largest spatial
     # grid first (P3, P4, P5). Compute once.
