@@ -399,16 +399,14 @@ def decode_ultralytics_output(int8_outputs, dequant_scales, conf_threshold,
 
         # 4. Indexed anchor lookup. With bs=1 the mask length matches the
         #    flat anchor grid (ny*nx) directly; no tile required.
-        # To correctly get the level index for anchors and strides,
-        # we can determine it from the spatial size since cache strides are mapped 1-to-1.
-        level_idx = None
-        for i, s in enumerate(cache.strides):
-            if (640 // s) * (640 // s) == ny * nx:
-                level_idx = i
-                break
-        if level_idx is None:
-            # Fallback (should not happen)
-            level_idx = 0
+        # Map this spatial group to a pyramid level without assuming a fixed
+        # input resolution: the largest feature map corresponds to the smallest
+        # stride (cache.strides is ordered ascending, e.g. [8, 16, 32]).
+        sorted_sizes = sorted(spatial_groups.keys(), reverse=True)
+        level_idx = sorted_sizes.index(spatial_size)
+        if level_idx >= len(cache.strides):
+            # Fallback (should not happen): clamp to the coarsest level.
+            level_idx = len(cache.strides) - 1
 
         base_anchors = cache.anchors(level_idx, ny, nx)  # (ny*nx, 2)
         if bs == 1:

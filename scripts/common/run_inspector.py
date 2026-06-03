@@ -19,7 +19,7 @@ from _bootstrap import PROJECT_ROOT  # noqa: F401
 from model_config import get_active_model
 from dataset_config import get_active_dataset
 from board_config import DPU_FINGERPRINT
-from model_utils import prepare_model
+from model_utils import prepare_model, apply_detect_export_patch
 
 
 def run_model_inspector(model_id, dataset_id):
@@ -44,6 +44,15 @@ def run_model_inspector(model_id, dataset_id):
 
     # Always inspect the original architecture (prune_threshold=None).
     model = prepare_model(m_cfg, d_cfg, device, prune_threshold=None)
+
+    # Inspect the same graph that gets quantized and compiled: for Ultralytics
+    # end-to-end detection heads this exports the one2one branches and drops the
+    # in-graph DFL decode + topk post-processing that never reach the DPU.
+    # No-op for classification / segmentation models.
+    num_patched = apply_detect_export_patch(model)
+    if num_patched:
+        print(f"[INFO] Applied detection export patch to {num_patched} "
+              f"head(s); inspecting the deployed one2one graph.")
 
     inspector = Inspector(DPU_FINGERPRINT)
     input_h, input_w = m_cfg['input_shape']

@@ -31,7 +31,7 @@ from _bootstrap import PROJECT_ROOT  # noqa: F401
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset
-from model_utils import prepare_model
+from model_utils import prepare_model, apply_detect_export_patch
 from dataset_utils import FlatImageDataset, YoloDataset, yolo_collate_fn, build_or_load_subset_indices
 from optimizer_utils import evaluate_loss
 from detection_profiles import get_profile
@@ -100,30 +100,12 @@ def run_quantization(args):
 
     model = prepare_model(m_cfg, d_cfg, device)
 
-    # Disable Detect head postprocessing to bypass XIR compiler crash on aten::topk.
-    # We monkey-patch forward to explicitly export the one2one branches (NMS-free)
-    # as 6 split tensors (which run_detection.py will merge), instead of falling back
-    # to the one2many branches.
-    # to the one2many branches.
-    for m in model.modules():
-        if hasattr(m, 'end2end') and hasattr(m, 'nc') and hasattr(m, 'nl'):
-            print(f"[INFO] Patching {m.__class__.__name__} to export one2one branches without topk.")
-            m.export = True
-            m.end2end = False
-            
-            def custom_forward(self, x_list):
-                res = []
-                for i in range(self.nl):
-                    # For NMS-free outputs, use the one2one head
-                    b = self.one2one_cv2[i](x_list[i])
-                    c = self.one2one_cv3[i](x_list[i])
-                    # XIR may not support torch.cat here if scales differ, 
-                    # so we just return them separate. run_detection.py handles the split.
-                    res.extend([b, c])
-                return tuple(res)
-            
-            # Bind the custom forward method
-            m.forward = custom_forward.__get__(m, type(m))
+    # Disable Detect head postprocessing to bypass the XIR compiler crash on
+    # aten::topk. The patched forward exports the one2one branches (NMS-free)
+    # as 6 split tensors that run_detection.py merges, instead of running the
+    # in-graph DFL decode + topk. The Inspector stage applies the SAME patch so
+    # it reports on exactly the graph we quantize and compile.
+    apply_detect_export_patch(model)
 
     # Build the calibration loader matching the model's task type.
     curr_batch_size = 1 if args.quant_mode == 'test' else args.batch_size

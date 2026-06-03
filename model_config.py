@@ -125,11 +125,14 @@ MODELS = {
         "end2end": True,
         "max_det": 300,
         "strides": [8, 16, 32],
+        # Output convs of the Detect head must keep their channel counts during
+        # pruning. Detect is the last layer in configs/yolov26s_dpu.yaml
+        # (layers 0-21 + Detect), so it lives at model.model[22].
         "prune_excludes": [
-            "model.24.cv2.*.2",
-            "model.24.cv3.*.2",
-            "model.24.one2one_cv2.*.2",
-            "model.24.one2one_cv3.*.2"
+            "model.22.cv2.*.2",
+            "model.22.cv3.*.2",
+            "model.22.one2one_cv2.*.2",
+            "model.22.one2one_cv3.*.2"
         ]
     },
     "unet_res18": {

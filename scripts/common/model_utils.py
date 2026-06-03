@@ -271,3 +271,47 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     model.to(device)
     model.eval()
     return model
+
+
+def apply_detect_export_patch(model):
+    """Patch an Ultralytics end-to-end ``Detect`` head to export the raw
+    one2one box/cls convolution tensors instead of running the in-graph DFL
+    decode, sigmoid, and top-k post-processing.
+
+    This is the exact subgraph that gets quantized, compiled, and deployed to
+    the DPU, so both the Inspector and the quantizer must apply this patch to
+    report on / quantize the same graph. It avoids the XIR compiler crash on
+    ``aten::topk`` and emits 6 split tensors (box/cls per P3/P4/P5) that
+    ``run_detection.py`` re-pairs by channel count.
+
+    Safe no-op for models without an end-to-end ``Detect`` head (e.g.
+    classification or segmentation backbones).
+
+    Returns the number of detection heads patched.
+    """
+    patched = 0
+    for m in model.modules():
+        # ``one2one_cv2``/``one2one_cv3`` are unique to an end-to-end Detect
+        # head; requiring them keeps this a no-op for other model types and
+        # avoids touching a non-end2end head whose forward we cannot replace.
+        if (hasattr(m, 'end2end') and hasattr(m, 'nc') and hasattr(m, 'nl')
+                and hasattr(m, 'one2one_cv2') and hasattr(m, 'one2one_cv3')):
+            print(f"[INFO] Patching {m.__class__.__name__} to export one2one "
+                  f"branches without topk.")
+            m.export = True
+            m.end2end = False
+
+            def custom_forward(self, x_list):
+                res = []
+                for i in range(self.nl):
+                    # NMS-free one2one head: emit raw box/cls conv tensors.
+                    # Keep them split (no torch.cat) so differing INT8 scales
+                    # are preserved; run_detection.py pairs them by channel.
+                    b = self.one2one_cv2[i](x_list[i])
+                    c = self.one2one_cv3[i](x_list[i])
+                    res.extend([b, c])
+                return tuple(res)
+
+            m.forward = custom_forward.__get__(m, type(m))
+            patched += 1
+    return patched
