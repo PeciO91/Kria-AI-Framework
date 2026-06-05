@@ -135,6 +135,48 @@ MODELS = {
             "model.22.one2one_cv3.*.2"
         ]
     },
+    "yolov26n_seg": {
+        "source": "custom",
+        "loader": "ultralytics",
+        "type": "segmentation",
+        "name": "YOLOv26n-Seg",
+        "input_shape": (640, 640),
+        "model_path": "models/yolo26n-seg.pt",
+        "repo_path": "models/ultralytics-main",
+        "yaml_path": "configs/yolo26-seg_dpu.yaml",
+        "gops": 10.5,
+        # Instance-segmentation: reuse the anchor-free detection decoder for
+        # boxes/classes, then assemble per-object masks on the ARM CPU from the
+        # exported mask coefficients + prototypes (see run_instance_seg.py).
+        "seg_instance": True,
+        "decoder": "ultralytics_anchor_free",
+        "num_classes": 80,
+        "reg_max": 1,
+        "end2end": True,
+        "max_det": 300,
+        "strides": [8, 16, 32],
+        # Mask head: 32 coefficients per anchor decoded against 256-channel
+        # prototypes (Segment26 / Proto26). mask_threshold binarizes the final
+        # per-instance mask after sigmoid.
+        "num_masks": 32,
+        "num_protos": 256,
+        "conf_threshold": 0.1,
+        "iou_threshold": 0.45,
+        "mask_threshold": 0.5,
+        # Output convs of the Segment26 head must keep their channel counts
+        # during pruning. Segment26 is the last layer in
+        # configs/yolo26-seg_dpu.yaml (layers 0-21 + Segment26), so it lives at
+        # model.model[22]. Protect box (cv2), class (cv3) and mask (cv4) convs
+        # of both the one2many and one2one branches.
+        "prune_excludes": [
+            "model.22.cv2.*.2",
+            "model.22.cv3.*.2",
+            "model.22.cv4.*.2",
+            "model.22.one2one_cv2.*.2",
+            "model.22.one2one_cv3.*.2",
+            "model.22.one2one_cv4.*.2"
+        ]
+    },
     "unet_res18": {
         "source": "custom",
         "file_path": "models/unet.py",         # You will need to provide this model file

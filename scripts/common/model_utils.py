@@ -274,20 +274,29 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
 
 
 def apply_detect_export_patch(model):
-    """Patch an Ultralytics end-to-end ``Detect`` head to export the raw
-    one2one box/cls convolution tensors instead of running the in-graph DFL
-    decode, sigmoid, and top-k post-processing.
+    """Patch an Ultralytics end-to-end ``Detect``/``Segment`` head to export the
+    raw one2one convolution tensors instead of running the in-graph DFL decode,
+    sigmoid, and top-k post-processing.
 
     This is the exact subgraph that gets quantized, compiled, and deployed to
     the DPU, so both the Inspector and the quantizer must apply this patch to
     report on / quantize the same graph. It avoids the XIR compiler crash on
-    ``aten::topk`` and emits 6 split tensors (box/cls per P3/P4/P5) that
-    ``run_detection.py`` re-pairs by channel count.
+    ``aten::topk``.
 
-    Safe no-op for models without an end-to-end ``Detect`` head (e.g.
-    classification or segmentation backbones).
+    Detection heads (``Detect``) emit 6 split tensors (box/cls per P3/P4/P5)
+    that ``run_detection.py`` re-pairs by channel count.
 
-    Returns the number of detection heads patched.
+    Instance-segmentation heads (``Segment``/``Segment26``) additionally carry a
+    mask-coefficient branch (``one2one_cv4``) and a prototype generator
+    (``proto``). For those we emit 10 split tensors: box/cls/mask per level (9)
+    plus the single prototype tensor; ``run_instance_seg.py`` assembles the
+    per-object masks on the ARM CPU. The training-only semantic-seg branch of
+    ``Proto26`` is never invoked here.
+
+    Safe no-op for models without an end-to-end head (e.g. classification or
+    semantic-segmentation backbones).
+
+    Returns the number of heads patched.
     """
     patched = 0
     for m in model.modules():
@@ -296,20 +305,36 @@ def apply_detect_export_patch(model):
         # avoids touching a non-end2end head whose forward we cannot replace.
         if (hasattr(m, 'end2end') and hasattr(m, 'nc') and hasattr(m, 'nl')
                 and hasattr(m, 'one2one_cv2') and hasattr(m, 'one2one_cv3')):
-            print(f"[INFO] Patching {m.__class__.__name__} to export one2one "
-                  f"branches without topk.")
+            # An instance-seg head also exposes a mask-coefficient branch and a
+            # prototype generator; detect it so we export the mask tensors too.
+            has_mask = hasattr(m, 'one2one_cv4') and hasattr(m, 'proto')
+            head_kind = "Segment" if has_mask else "Detect"
+            print(f"[INFO] Patching {m.__class__.__name__} ({head_kind}) to "
+                  f"export one2one branches without topk.")
             m.export = True
             m.end2end = False
 
             def custom_forward(self, x_list):
                 res = []
+                emit_mask = hasattr(self, 'one2one_cv4') and hasattr(self, 'proto')
                 for i in range(self.nl):
-                    # NMS-free one2one head: emit raw box/cls conv tensors.
-                    # Keep them split (no torch.cat) so differing INT8 scales
-                    # are preserved; run_detection.py pairs them by channel.
-                    b = self.one2one_cv2[i](x_list[i])
-                    c = self.one2one_cv3[i](x_list[i])
-                    res.extend([b, c])
+                    # NMS-free one2one head: emit raw box/cls (and mask-coeff)
+                    # conv tensors. Keep them split (no torch.cat) so differing
+                    # INT8 scales are preserved; the board runner pairs them by
+                    # channel count.
+                    res.append(self.one2one_cv2[i](x_list[i]))
+                    res.append(self.one2one_cv3[i](x_list[i]))
+                    if emit_mask:
+                        res.append(self.one2one_cv4[i](x_list[i]))
+                if emit_mask:
+                    # Proto26 fuses every pyramid level (exposes ``feat_refine``)
+                    # and accepts the full feature list; the legacy ``Proto``
+                    # consumes only the highest-resolution map. Skip the
+                    # training-only semseg output.
+                    if hasattr(self.proto, 'feat_refine'):
+                        res.append(self.proto(x_list, return_semseg=False))
+                    else:
+                        res.append(self.proto(x_list[0]))
                 return tuple(res)
 
             m.forward = custom_forward.__get__(m, type(m))

@@ -20,7 +20,7 @@ The project is organized by task while keeping the deployment core shared.
 |---|---|---|
 | Classification | Stable | ResNet18/50, MobileNetV2/V3/V4, InceptionV3. |
 | Detection | Stable | YOLOv5n and YOLOv26s on COCO/KV260. |
-| Segmentation | WIP | UNet_ResNet18 registry and board runner skeleton exist; evaluation path still pending. |
+| Segmentation | WIP | UNet_ResNet18 registry and board runner skeleton exist. YOLOv26n-seg instance segmentation added (WIP). Evaluation path still pending. |
 | Optimizer / pruning | WIP | Vitis AI structural pruning scripts are present; accuracy recovery loops are still being refined. |
 
 ## Project structure
@@ -156,6 +156,12 @@ COCO detection calibration uses images from `data/coco2017`. YOLO-format labels 
 - Board profiling flags include `--profile`, `--profile-json`, `--queue-size`, `--producers`, `--no-draw`, and `--no-save`.
 
 See [`scripts/detection/README.md`](scripts/detection/README.md) for details.
+
+## Instance Segmentation notes
+
+- **YOLOv26n-seg** is added as a WIP instance segmentation model. It reuses the detection pipeline's anchor-free decoder but adds a mask assembly phase on the ARM CPU.
+- **Training Requirement**: The model must be trained using a DPU-friendly YAML (e.g. `configs/yolo26-seg_dpu.yaml`) which replaces C2PSA/Attention layers with standard convolutions and ensures DPU-compatible activations (ReLU).
+- **mAP Evaluation Requirement**: To run on-board mask mAP@0.5 evaluation (via the `--accuracy` flag), COCO YOLO-seg format polygon labels must be accessible on the board and specified via `--labels-dir` (or configured in `dataset_config.py`).
 
 ## Generated artifacts
 

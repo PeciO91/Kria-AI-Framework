@@ -171,7 +171,19 @@ def main():
     # this task). board_utils.py is shared by every runner; the per-task
     # files come from TASK_BOARD_FILES.
     task_type = m_cfg.get("type", "classification")
-    task_files = TASK_BOARD_FILES.get(task_type, TASK_BOARD_FILES["classification"])
+    is_instance_seg = task_type == "segmentation" and m_cfg.get("seg_instance", False)
+
+    if is_instance_seg:
+        task_files = ["run_instance_seg.py", "seg_utils.py", "detection_utils.py"]
+        runner = "run_instance_seg.py"
+    else:
+        task_files = TASK_BOARD_FILES.get(task_type, TASK_BOARD_FILES["classification"])
+        task_runner_map = {
+            "classification": "run_inference.py",
+            "detection":      "run_detection.py",
+            "segmentation":   "run_segmentation.py",
+        }
+        runner = task_runner_map.get(task_type, "run_inference.py")
 
     transfer_payload = [
         os.path.join(PROJECT_ROOT, "build", build_dir_name, "compiled",
@@ -185,13 +197,6 @@ def main():
         transfer_payload.append(get_script_path(name, task=task_type))
     existing_files = [f for f in transfer_payload if os.path.exists(f)]
 
-    # Pick the runner filename that the user should invoke on the board.
-    task_runner_map = {
-        "classification": "run_inference.py",
-        "detection":      "run_detection.py",
-        "segmentation":   "run_segmentation.py",
-    }
-    runner = task_runner_map.get(task_type, "run_inference.py")
     dataset_tip = f" --dataset {args.dataset}" if args.dataset else ""
 
     if args.transfer == 'none':

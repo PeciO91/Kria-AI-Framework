@@ -46,9 +46,10 @@ def run_model_inspector(model_id, dataset_id):
     model = prepare_model(m_cfg, d_cfg, device, prune_threshold=None)
 
     # Inspect the same graph that gets quantized and compiled: for Ultralytics
-    # end-to-end detection heads this exports the one2one branches and drops the
+    # end-to-end detection / instance-seg heads this exports the one2one branches
+    # (box/cls, plus mask-coeff + prototypes for Segment26) and drops the
     # in-graph DFL decode + topk post-processing that never reach the DPU.
-    # No-op for classification / segmentation models.
+    # No-op for classification / semantic-segmentation models.
     num_patched = apply_detect_export_patch(model)
     if num_patched:
         print(f"[INFO] Applied detection export patch to {num_patched} "

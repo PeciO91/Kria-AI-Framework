@@ -125,8 +125,14 @@ def run_quantization(args):
             random.seed(42)  # Fixed seed for reproducibility
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
-    elif task_type == 'detection':
-        print("[INFO] Using COCO Labeled dataset loader for detection calibration.")
+    elif task_type == 'detection' or m_cfg.get('seg_instance'):
+        # Anchor-free detection AND Ultralytics instance segmentation share the
+        # letterbox preprocessing of the board runner. Calibration is forward
+        # only, so the parsed labels are unused here (instance-seg polygon
+        # labels are tolerated and simply ignored).
+        print("[INFO] Using letterbox YOLO dataset loader for "
+              f"{'instance-seg' if m_cfg.get('seg_instance') else 'detection'} "
+              "calibration.")
         yolo_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(d_cfg['normalization']['mean'],
@@ -157,7 +163,7 @@ def run_quantization(args):
             indices = random.sample(range(len(dataset)), actual_subset_len)
             dataset = Subset(dataset, indices)
 
-    collate_fn = yolo_collate_fn if task_type == 'detection' else None
+    collate_fn = yolo_collate_fn if (task_type == 'detection' or m_cfg.get('seg_instance')) else None
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False, collate_fn=collate_fn)
     input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn([1, 3, input_h, input_w]).to(device)

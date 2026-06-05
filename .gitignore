@@ -23,3 +23,7 @@ docs/
 
 # Antigravity CLI workspace state
 .antigravitycli/
+
+# Dev artifacts
+tests/
+YOLOv26n_Instance_Segmentation_Progress.md
