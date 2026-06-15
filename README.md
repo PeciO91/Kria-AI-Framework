@@ -56,7 +56,9 @@ Project/
     │   └── detection_utils.py
     └── segmentation/
         ├── README.md
-        └── run_segmentation.py
+        ├── run_segmentation.py      # Semantic segmentation runner (UNet, WIP)
+        ├── run_instance_seg.py      # YOLOv26n-seg instance segmentation runner (WIP)
+        └── seg_utils.py             # Mask assembly + mask mAP helpers
 ```
 
 ## Task guides
@@ -124,11 +126,14 @@ python scripts/common/deploy.py \
   --transfer scp
 ```
 
+`--transfer` accepts `scp` (default), `rsync` (faster re-deploys), `local` (copy to `--local_dest`, e.g. an SD-card mount), or `none` (skip). Board IP/user default to `BOARD_IP`/`BOARD_USER` from `board_config.py` and can be overridden with `--ip`/`--user`.
+
 `deploy.py` transfers only the files needed by the active task:
 
 - **Classification**: `run_inference.py` + shared configs/helpers.
 - **Detection**: `run_detection.py`, `detection_utils.py` + shared configs/helpers.
-- **Segmentation**: `run_segmentation.py` + shared configs/helpers.
+- **Semantic segmentation**: `run_segmentation.py` + shared configs/helpers.
+- **Instance segmentation** (`seg_instance` models like `yolov26n_seg`): `run_instance_seg.py`, `seg_utils.py`, `detection_utils.py` + shared configs/helpers.
 
 On the board, run the task-specific runner from `/home/root/` (or the configured board user home):
 
@@ -136,6 +141,7 @@ On the board, run the task-specific runner from `/home/root/` (or the configured
 python3 run_inference.py --model resnet18 --dataset intel_images --threads 2
 python3 run_detection.py --model yolov5n --dataset coco_detection --threads 2
 python3 run_segmentation.py --model unet_res18 --dataset cityscapes_seg --threads 2
+python3 run_instance_seg.py --model yolov26n_seg --dataset coco_instance_seg --threads 2
 ```
 
 ## Supported datasets
@@ -145,7 +151,8 @@ python3 run_segmentation.py --model unet_res18 --dataset cityscapes_seg --thread
 | `intel_images` | Classification | `data/intel_images/calibration_data` |
 | `intel_images_inception` | Classification | `data/intel_images/calibration_data` |
 | `coco_detection` | Detection | `data/coco2017/train2017`, `data/coco2017/val2017` |
-| `cityscapes_seg` | Segmentation | `data/cityscapes/calibration_data` |
+| `coco_instance_seg` | Instance segmentation | `data/coco2017/train2017`, `data/coco2017/val2017` (YOLO-seg polygon labels) |
+| `cityscapes_seg` | Semantic segmentation | `data/cityscapes/calibration_data` |
 
 COCO detection calibration uses images from `data/coco2017`. YOLO-format labels are optional for pure quantizer calibration but required for training or mAP evaluation.
 
