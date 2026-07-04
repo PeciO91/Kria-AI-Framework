@@ -532,7 +532,7 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
         for _ in range(num_consumers):
             img_queue.put(None)
 
-        print(f"[INFO] DPU Processing & NMS started...")
+        print(f"[INFO] DPU Processing & Post-processing started...")
         while any(t.is_alive() for t in c_threads):
             sys.stdout.write(f"\r[INFO] Progress: {progress.value}/{total_imgs} "
                              f"({(progress.value/total_imgs)*100:.1f}%) ")

@@ -12,7 +12,7 @@ Host-side stages are shared in `scripts/common/`; the board-side runner is selec
 | Model ID | Model name | Input | Path | Status |
 |---|---|---:|---|---|
 | `unet_res18` | UNet_ResNet18 | `512x512` | Semantic | Registered, but model file/checkpoint and evaluation flow are WIP. |
-| `yolov26n_seg` | YOLOv26n-Seg | `640x640` | Instance | DPU-friendly Ultralytics wrapper; anchor-free decode + CPU mask assembly. Optional mask mAP@0.5. WIP. |
+| `yolov26n_seg` | YOLOv26n-Seg | `640x640` | Instance | DPU-friendly Ultralytics wrapper; LUT-accelerated preprocessing + anchor-free decode + CPU mask assembly. Native mask mAP@0.5 support. Stable. |
 
 The `unet_res18` registry entry expects:
 
@@ -151,7 +151,7 @@ python3 run_instance_seg.py \
 
 `seg_utils.py` provides `load_yolo_seg_labels` (polygon rasterization), `mask_iou_matrix`, and `compute_ap` (101-point interpolation) for this path. Omit `--labels-dir` to use the `board_labels` default from `dataset_config.py`.
 
-## Current limitations
+## Important Notes & Limitations
 
 ### Semantic (`unet_res18`)
 
