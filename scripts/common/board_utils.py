@@ -265,17 +265,42 @@ def build_norm_lut(norm_mean, norm_std, fix_pos):
 _CHANNEL_INDEX_3 = np.arange(3, dtype=np.intp)
 
 
+def _probe_cv2_lut_s8():
+    """Probe once whether this OpenCV build applies a signed (int8) LUT.
+
+    cv2.LUT is NEON-accelerated on ARM and materially faster than numpy fancy
+    indexing for the uint8 -> int8 remap, but the signed (CV_8S) table depth is
+    not accepted by every OpenCV build. Detecting support at import keeps the
+    per-frame hot path branch-free.
+    """
+    try:
+        out = cv2.LUT(np.zeros((1, 1, 3), np.uint8), np.zeros(256, np.int8))
+        return out.dtype == np.int8
+    except Exception:
+        return False
+
+
+_HAVE_CV2_LUT_S8 = _probe_cv2_lut_s8()
+
+
 def apply_norm_lut(img_uint8, lut):
     """
     Apply a normalization LUT to an HWC uint8 image and return the int8
-    result with identical shape. Uses numpy fancy indexing, which is
-    portable across OpenCV versions and ~10x faster than the explicit
-    float multiply on ARM.
+    result with identical shape.
 
-    A 1D LUT of shape (256,) means all channels share the same mapping
-    and `np.take` is used. A 2D LUT of shape (256, 3) dispatches to
-    per-channel fancy indexing.
+    When the OpenCV build supports a signed 256-entry table, `cv2.LUT` is used:
+    its NEON-vectorized implementation is several times faster than numpy fancy
+    indexing on the ARM cores of the KV260. A 1D LUT of shape (256,) is applied
+    to every channel; a 2D LUT of shape (256, 3) is reshaped to (1, 256, 3) so
+    each channel is mapped by its own column.
+
+    Falls back to numpy `np.take` / fancy indexing (bit-identical output) when
+    the signed cv2.LUT path is unavailable.
     """
+    if _HAVE_CV2_LUT_S8:
+        if lut.ndim == 1:
+            return cv2.LUT(img_uint8, lut)
+        return cv2.LUT(img_uint8, lut.reshape(1, 256, lut.shape[1]))
     if lut.ndim == 1:
         return np.take(lut, img_uint8)
     return lut[img_uint8, _CHANNEL_INDEX_3]
