@@ -141,9 +141,9 @@ MODELS = {
         "type": "segmentation",
         "name": "YOLOv26n-Seg",
         "input_shape": (640, 640),
-        "model_path": "models/yolo26n-seg.pt",
+        "model_path": "models/yolov26n-seg.pt",
         "repo_path": "models/ultralytics-main",
-        "yaml_path": "configs/yolo26-seg_dpu.yaml",
+        "yaml_path": "configs/yolov26n-seg_dpu.yaml",
         "gops": 10.5,
         # Instance-segmentation: reuse the anchor-free detection decoder for
         # boxes/classes, then assemble per-object masks on the ARM CPU from the
