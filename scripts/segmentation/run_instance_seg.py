@@ -307,21 +307,23 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
                 proto_tensor = output_data[proto_idx][0].astype(np.float32) * proto_scale
                 proto = proto_tensor.transpose(2, 0, 1) # (nm, H, W)
                 
+                # xywh -> xyxy for boxes (in DPU space)
+                stage_start = _profile_start(profiler)
+                xyxy_dpu = final_boxes.copy()
+                xyxy_dpu[:, 2] = final_boxes[:, 0] + final_boxes[:, 2]
+                xyxy_dpu[:, 3] = final_boxes[:, 1] + final_boxes[:, 3]
+
                 # Assemble masks
-                masks = process_mask(proto, mask_coeffs, final_boxes, dpu_shape, upsample=True)
+                masks = process_mask(proto, mask_coeffs, xyxy_dpu, dpu_shape, upsample=True)
                 _profile_end(profiler, "mask_assembly", stage_start)
 
-                # xywh -> xyxy for boxes
                 stage_start = _profile_start(profiler)
-                xyxy = final_boxes.copy()
-                xyxy[:, 2] = final_boxes[:, 0] + final_boxes[:, 2]
-                xyxy[:, 3] = final_boxes[:, 1] + final_boxes[:, 3]
-                xyxy = scale_coords(dpu_shape, xyxy, orig_shape)
+                xyxy = scale_coords(dpu_shape, xyxy_dpu.copy(), orig_shape)
                 _profile_end(profiler, "coord_scale", stage_start)
                 
                 # Scale masks back to original image shape
                 stage_start = _profile_start(profiler)
-                masks = scale_image_masks(masks, dpu_shape, orig_shape)
+                masks = scale_image_masks(masks, xyxy_dpu, dpu_shape, orig_shape)
                 binary_masks = masks > mask_thresh
                 _profile_end(profiler, "mask_scale", stage_start)
 

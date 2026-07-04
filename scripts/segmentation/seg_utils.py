@@ -18,61 +18,99 @@ def crop_mask(masks, boxes):
 
 def process_mask(protos, masks_in, bboxes, shape, upsample=False):
     """
-    Assemble masks using predicted coefficients and the prototype tensor.
-    protos: [nm, mh, mw]
-    masks_in: [n, nm]
-    bboxes: [n, 4] (x1, y1, x2, y2) in the letterboxed image coordinates (dpu_shape)
-    shape: (ih, iw)  (dpu_shape)
+    Optimized process_mask: crops prototypes first.
     """
     c, mh, mw = protos.shape
     ih, iw = shape
+    n = len(bboxes)
     
-    # masks = sigmoid(masks_in @ protos)
-    masks = (masks_in @ protos.reshape(c, -1)) # [n, mh*mw]
-    masks = 1.0 / (1.0 + np.exp(-masks)) # sigmoid
-    masks = masks.reshape(-1, mh, mw)
-
-    # Scale boxes to mask resolution
+    if n == 0:
+        return np.empty((0, mh, mw) if not upsample else (0, ih, iw), dtype=np.float32)
+        
     downsampled_bboxes = bboxes.copy()
     downsampled_bboxes[:, 0] *= mw / iw
     downsampled_bboxes[:, 1] *= mh / ih
     downsampled_bboxes[:, 2] *= mw / iw
     downsampled_bboxes[:, 3] *= mh / ih
-
-    masks = crop_mask(masks, downsampled_bboxes)  # [n, mh, mw]
     
+    masks = np.zeros((n, mh, mw), dtype=np.float32)
+    for i in range(n):
+        bx1, by1, bx2, by2 = downsampled_bboxes[i]
+        px1, py1 = max(0, int(np.floor(bx1))), max(0, int(np.floor(by1)))
+        px2, py2 = min(mw, int(np.ceil(bx2))), min(mh, int(np.ceil(by2)))
+        
+        if px2 <= px1 or py2 <= py1:
+            continue
+            
+        proto_crop = np.ascontiguousarray(protos[:, py1:py2, px1:px2]).reshape(c, -1)
+        mask_logits = masks_in[i] @ proto_crop
+        mask_crop = 1.0 / (1.0 + np.exp(-mask_logits))
+        mask_crop = mask_crop.reshape(py2 - py1, px2 - px1)
+        
+        r = np.arange(px1, px2, dtype=np.float32)
+        c_idx = np.arange(py1, py2, dtype=np.float32)
+        mask_crop = mask_crop * ((r[None, :] >= bx1) * (r[None, :] < bx2) * 
+                                 (c_idx[:, None] >= by1) * (c_idx[:, None] < by2))
+        masks[i, py1:py2, px1:px2] = mask_crop
+        
     if upsample:
         masks = cv2.resize(masks.transpose(1, 2, 0), (iw, ih), interpolation=cv2.INTER_LINEAR)
         if len(masks.shape) == 2:
             masks = masks[:, :, None]
-        masks = masks.transpose(2, 0, 1)  # [n, ih, iw]
+        masks = masks.transpose(2, 0, 1)
+        
     return masks
 
-def scale_image_masks(masks, img1_shape, img0_shape):
+def scale_image_masks(masks, bboxes, img1_shape, img0_shape):
     """
-    Rescale masks from letterboxed image shape back to original image shape.
-    masks: [n, h1, w1] where h1,w1 = img1_shape
-    img0_shape: (h0, w0) of original image
+    masks: (n, ih, iw) float32 sigmoid probabilities, ih/iw == img1_shape
+    bboxes: (n, 4) x1,y1,x2,y2 in img1_shape (padded network input) space
     """
-    if len(masks) == 0:
+    n = masks.shape[0]
+    if n == 0:
         return np.empty((0, img0_shape[0], img0_shape[1]), dtype=masks.dtype)
 
     gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])
-    pad = (img1_shape[1] - img0_shape[1] * gain) / 2, (img1_shape[0] - img0_shape[0] * gain) / 2
-    
-    top, left = int(round(pad[1] - 0.1)), int(round(pad[0] - 0.1))
-    bottom, right = int(round(img1_shape[0] - pad[1] + 0.1)), int(round(img1_shape[1] - pad[0] + 0.1))
-    
-    # Crop the padding
-    masks = masks[:, top:bottom, left:right]
-    
-    # Resize to original shape
-    masks = cv2.resize(masks.transpose(1, 2, 0), (img0_shape[1], img0_shape[0]), interpolation=cv2.INTER_LINEAR)
-    if len(masks.shape) == 2:
-        masks = masks[:, :, None]
-    masks = masks.transpose(2, 0, 1)
-    
-    return masks
+    pad_w = (img1_shape[1] - img0_shape[1] * gain) / 2
+    pad_h = (img1_shape[0] - img0_shape[0] * gain) / 2
+
+    top, left = int(round(pad_h - 0.1)), int(round(pad_w - 0.1))
+    bottom, right = int(round(img1_shape[0] - pad_h + 0.1)), int(round(img1_shape[1] - pad_w + 0.1))
+    Hc, Wc = bottom - top, right - left
+
+    # match EXACTLY the scale the reference single full-canvas resize would use
+    scale_y = Hc / img0_shape[0]
+    scale_x = Wc / img0_shape[1]
+
+    margin = 2  # destination pixels; covers the sigmoid's soft falloff near the box edge
+    scaled_masks = np.zeros((n, img0_shape[0], img0_shape[1]), dtype=masks.dtype)
+
+    for i in range(n):
+        x1, y1, x2, y2 = bboxes[i]
+        dx1 = (x1 - pad_w) / gain - margin
+        dy1 = (y1 - pad_h) / gain - margin
+        dx2 = (x2 - pad_w) / gain + margin
+        dy2 = (y2 - pad_h) / gain + margin
+
+        odx1, ody1 = max(0, int(np.floor(dx1))), max(0, int(np.floor(dy1)))
+        odx2, ody2 = min(img0_shape[1], int(np.ceil(dx2))), min(img0_shape[0], int(np.ceil(dy2)))
+        dst_w, dst_h = odx2 - odx1, ody2 - ody1
+        if dst_w <= 0 or dst_h <= 0:
+            continue
+
+        # dst->src affine, derived from the SAME cv2.resize convention as the
+        # reference full-canvas resize (top/left already folds in the pad crop)
+        M = np.array([
+            [scale_x, 0, left + (odx1 + 0.5) * scale_x - 0.5],
+            [0, scale_y, top + (ody1 + 0.5) * scale_y - 0.5],
+        ], dtype=np.float32)
+
+        scaled_masks[i, ody1:ody2, odx1:odx2] = cv2.warpAffine(
+            masks[i], M, (dst_w, dst_h),
+            flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+        )
+
+    return scaled_masks
 
 def load_yolo_seg_labels(label_path, img_shape):
     """
