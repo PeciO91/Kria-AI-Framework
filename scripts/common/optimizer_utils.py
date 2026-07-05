@@ -51,7 +51,8 @@ def estimate_gflops(model, input_shape, fallback_gops=None):
     """
     try:
         from thop import profile
-        dummy_input = torch.randn(1, 3, input_shape[0], input_shape[1])
+        device = next(model.parameters()).device
+        dummy_input = torch.randn(1, 3, input_shape[0], input_shape[1]).to(device)
         flops, params = profile(model, inputs=(dummy_input,), verbose=False)
         return flops / 1e9  # Convert to GFLOPs
     except ImportError:
@@ -64,6 +65,12 @@ def estimate_gflops(model, input_shape, fallback_gops=None):
         if fallback_gops is not None:
             return fallback_gops
         return 0.0
+    finally:
+        # thop does NOT clear its hooks if it crashes! Leftover hooks will
+        # crash the VAIQ pruner with "OrderedDict mutated during iteration".
+        for m in model.modules():
+            m._forward_hooks.clear()
+            m._forward_pre_hooks.clear()
 
 
 _CONV_TYPES = (nn.Conv1d, nn.Conv2d, nn.Conv3d)
@@ -162,16 +169,37 @@ def format_report(before_metrics, after_metrics, model_name):
     lines.append(f"  {'Layer Name':<40} {'Before':>12} {'After':>12} {'Delta':>12}")
     lines.append(f"  {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
     for name, in_ch, out_ch, params, layer_type in before_layers:
-        before_str = f"{out_ch}ch"
+        before_str = f"{params:,}"
         if name in after_layers:
             after_in, after_out, after_params = after_layers[name]
-            after_str = f"{after_out}ch"
-            delta = after_out - out_ch
-            delta_str = f"{delta:+d}"
+            after_str = f"{after_params:,}"
+            delta = after_params - params
+            delta_pct = (delta / params * 100) if params > 0 else 0
+            delta_str = f"{delta:,} ({delta_pct:+.1f}%)"
         else:
             after_str = "REMOVED"
-            delta_str = "N/A"
+            delta_str = "-100%"
         lines.append(f"  {name:<40} {before_str:>12} {after_str:>12} {delta_str:>12}")
+        
+    # Top 10 Most Pruned Layers
+    lines.append(f"\nTop 10 Most Pruned Layers:")
+    pruned_layers = []
+    for name, in_ch, out_ch, params, layer_type in before_metrics['layer_summary']:
+        if name in after_layers:
+            _, _, after_params = after_layers[name]
+            delta = params - after_params
+            if delta > 0:
+                pruned_layers.append((name, params, after_params, delta))
+        else:
+            pruned_layers.append((name, params, 0, params))
+            
+    pruned_layers = sorted(pruned_layers, key=lambda x: x[3], reverse=True)[:10]
+    
+    lines.append(f"  {'Layer Name':<40} {'Before':>12} {'After':>12} {'Reduction':>12}")
+    lines.append(f"  {'-'*40} {'-'*12} {'-'*12} {'-'*12}")
+    for name, b_params, a_params, delta in pruned_layers:
+        delta_pct = (-delta / b_params * 100) if b_params > 0 else 0
+        lines.append(f"  {name:<40} {b_params:>12,} {a_params:>12,} {-delta:>12,} ({delta_pct:+.1f}%)")
 
     lines.append("\n" + "=" * 80)
     return "\n".join(lines)
@@ -392,12 +420,19 @@ def compute_metrics_for_pruned_model(pruned_model, slim_sd, input_shape,
         ref_gflops = reference_metrics.get('gflops', 0)
         gflops = (ref_gflops * (slim_params / ref_params)
                   if ref_params > 0 else ref_gflops)
-        # Prefer the wrapper's layer summary if it differs from the reference
         # (channels at least changed even if shapes are masked); otherwise
         # fall back to the reference summary.
-        layer_summary = (wrapper_metrics['layer_summary']
-                         if wrapper_metrics else
-                         reference_metrics.get('layer_summary', []))
+        layer_summary = []
+        for name, in_ch, out_ch, params, l_type in reference_metrics.get('layer_summary', []):
+            # Sum the number of elements in slim_sd for this layer's prefix
+            prefix = name + "."
+            slim_layer_params = sum(t.numel() for k, t in slim_sd.items() if k.startswith(prefix))
+            # Fallback to the original param count if it's not found in slim_sd
+            if slim_layer_params == 0 and not any(k.startswith(prefix) for k in slim_sd.keys()):
+                slim_layer_params = params
+                
+            layer_summary.append((name, in_ch, out_ch, slim_layer_params, l_type))
+            
         if wrapper_metrics is not None:
             print(f"[INFO] Pruner wrapper reports {wrapper_metrics['params']:,} params "
                   f"vs slim {slim_params:,}; using scaled GFLOPs estimate "

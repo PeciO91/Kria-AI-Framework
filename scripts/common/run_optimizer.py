@@ -44,8 +44,43 @@ def _safe_tensor_deepcopy(self, memo):
             return self.clone()
         raise e
 torch.Tensor.__deepcopy__ = _safe_tensor_deepcopy
-# --------------------------------------------
+# --- MONKEY PATCH FOR VAIQ THOP CRASH ---
+# Vitis AI's internal profiler uses `thop` which crashes on some YOLO layers (e.g. CUDA mismatches).
+# We intercept the VAIQ MACs counter, force it to run safely on CPU, and aggressively scrub hooks.
+import pytorch_nndct.utils.profiler as nndct_profiler
+_orig_model_complexity = nndct_profiler.model_complexity
 
+def _safe_model_complexity(model, inputs, **kwargs):
+    # Scrub existing hooks that might corrupt thop
+    for m in model.modules():
+        m._forward_hooks.clear()
+        m._forward_pre_hooks.clear()
+        
+    device = next(model.parameters()).device
+    model.cpu()
+    
+    if isinstance(inputs, torch.Tensor):
+        cpu_inputs = inputs.cpu()
+    elif isinstance(inputs, tuple):
+        cpu_inputs = tuple(t.cpu() if isinstance(t, torch.Tensor) else t for t in inputs)
+    elif isinstance(inputs, list):
+        cpu_inputs = [t.cpu() if isinstance(t, torch.Tensor) else t for t in inputs]
+    else:
+        cpu_inputs = inputs
+    
+    try:
+        macs, params = _orig_model_complexity(model, cpu_inputs, **kwargs)
+    finally:
+        model.to(device)
+        # Aggressively scrub hooks again so VAIQ's graph compiler doesn't trip on them
+        for m in model.modules():
+            m._forward_hooks.clear()
+            m._forward_pre_hooks.clear()
+            
+    return macs, params
+
+nndct_profiler.model_complexity = _safe_model_complexity
+# ----------------------------------------
 # Project-root import path (PROJECT_ROOT + scripts/common/ added to sys.path).
 from _bootstrap import PROJECT_ROOT  # noqa: F401
 
@@ -144,9 +179,9 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
             augment=False,
             indices=subset_indices
         )
-        loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=yolo_collate_fn)
+        loader = DataLoader(val_dataset, batch_size=4, shuffle=False, collate_fn=yolo_collate_fn)
     else:
-        loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
+        loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=4)
 
     print(f"[INFO] Running sensitivity analysis on {len(loader.dataset)} samples...")
 
@@ -239,7 +274,7 @@ def run_subnet_search(runner, m_cfg, d_cfg, device, ratio,
         print(f"[WARN] One-step search is only fully supported for classification in v1.")
         print(f"[INFO] Running search on {task_type} model - results may be limited.")
 
-    loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
+    loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=4)
 
     def calibration_fn(m, dataloader, number_forward=num_calib_forward):
         """Adaptive-BN calibration: re-estimate BN running stats for the subnet."""
@@ -378,15 +413,19 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
     
     task_type = m_cfg.get('type', 'classification')
     
-    if task_type not in ['classification', 'detection']:
-        print(f"[WARN] Fine-tuning is only implemented for classification and detection.")
+    if task_type not in ['classification', 'detection', 'segmentation']:
+        print(f"[WARN] Fine-tuning is only implemented for classification, detection, and segmentation.")
         print(f"[INFO] Skipping fine-tuning for {task_type} model.")
         print(f"[INFO] Model is pruned but weights are not retrained.")
         return model
     
     # Build train loader
-    train_loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=32)
+    train_loader = build_finetune_loader(m_cfg, d_cfg, subset_len=subset_len, batch_size=4)
     
+    # Ensure all parameters require gradients for fine-tuning
+    for param in model.parameters():
+        param.requires_grad = True
+        
     # Define loss and optimizer based on task type
     if task_type == 'classification':
         criterion = nn.CrossEntropyLoss()
@@ -425,12 +464,18 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
                 outputs = profile.forward_for_loss(model, images)
                 loss = criterion(outputs, targets)
                 
-            if isinstance(loss, dict):
+            if isinstance(loss, tuple) and len(loss) >= 2:
+                # Ultralytics returns (total_loss, detached_loss_components)
+                loss_val = loss[0]
+            elif isinstance(loss, dict):
                 loss_val = sum(l for l in loss.values())
             elif isinstance(loss, (list, tuple)):
                 loss_val = sum(loss)
             else:
                 loss_val = loss
+
+            if isinstance(loss_val, torch.Tensor) and loss_val.dim() > 0:
+                loss_val = loss_val.sum()
                 
             loss_val.backward()
             optimizer.step()
@@ -500,7 +545,10 @@ def run_optimizer():
 
     # Load configurations
     m_cfg = get_active_model(args.model)
-    d_cfg = get_active_dataset(args.dataset)
+    if args.dataset is None and m_cfg.get('type') == 'segmentation':
+        d_cfg = get_active_dataset('coco_instance_seg')
+    else:
+        d_cfg = get_active_dataset(args.dataset)
     
     # Set device
     if args.device == 'auto':
@@ -574,8 +622,8 @@ def run_optimizer():
         # saved separately in _slim.pt for standalone use.
         pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
         slim_weight_path = derive_weight_path(m_cfg['model_path'], "_slim")
-        save_path = os.path.join(parent_dir, pruned_weight_path)
-        slim_path = os.path.join(parent_dir, slim_weight_path)
+        save_path = pruned_weight_path
+        slim_path = slim_weight_path
         
         torch.save(current_model.state_dict(), save_path)
         print(f"[INFO] Pruned model (full-shape state_dict) saved to: {save_path}")
@@ -590,8 +638,7 @@ def run_optimizer():
         # because it can consume the .spec generated by either iterative or onestep.
         # This avoids the brittle per-ratio .search cache requirement of onestep.
         if args.mode == 'finetune':
-            pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
-            save_path = os.path.join(parent_dir, pruned_weight_path)
+            save_path = derive_weight_path(m_cfg['model_path'], "_pruned")
             if os.path.exists(save_path):
                 print(f"[INFO] Re-applying pruning to match saved slim model structure...")
                 input_h, input_w = m_cfg['input_shape']
@@ -611,11 +658,10 @@ def run_optimizer():
         
         current_model = run_finetune(current_model, m_cfg, d_cfg, device, args.epochs, args.lr, args.subset_len)
         
-        # Re-save fine-tuned model (full state_dict + optional slim).
-        pruned_weight_path = derive_weight_path(m_cfg['model_path'], "_pruned")
-        slim_weight_path = derive_weight_path(m_cfg['model_path'], "_slim")
-        save_path = os.path.join(parent_dir, pruned_weight_path)
-        slim_path = os.path.join(parent_dir, slim_weight_path)
+        finetuned_weight_path = derive_weight_path(m_cfg['model_path'], "_finetuned")
+        finetuned_slim_weight_path = derive_weight_path(m_cfg['model_path'], "_finetuned_slim")
+        save_path = finetuned_weight_path
+        slim_path = finetuned_slim_weight_path
         
         torch.save(current_model.state_dict(), save_path)
         print(f"[INFO] Fine-tuned model (full-shape state_dict) saved to: {save_path}")

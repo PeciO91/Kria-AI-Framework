@@ -176,7 +176,12 @@ MODELS = {
             "model.22.one2one_cv3.*.2",
             "model.22.one2one_cv4.*.2",
             "model.22.proto.*",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[6]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.117"
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[6]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.117",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[8]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.173",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[12]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.241",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[15]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.297",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[18]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.355",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[21]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.413"
         ]
 
 

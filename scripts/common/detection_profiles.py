@@ -77,10 +77,10 @@ class YOLOv26sProfile(DetectionProfile):
             from types import SimpleNamespace
             if not hasattr(model, 'args') or isinstance(model.args, dict):
                 base_args = model.args if hasattr(model, 'args') and isinstance(model.args, dict) else {}
-                base_args.update({'box': 7.5, 'cls': 0.5, 'dfl': 1.5, 'reg_max': 16, 'overlap_mask': True})
+                base_args.update({'box': 7.5, 'cls': 0.5, 'dfl': 1.5, 'reg_max': 16, 'overlap_mask': False})
                 model.args = SimpleNamespace(**base_args)
             elif not hasattr(model.args, 'overlap_mask'):
-                model.args.overlap_mask = True
+                model.args.overlap_mask = False
 
             # Initialize correct loss type based on end2end and seg_instance flags
             is_seg = self.m_cfg.get('seg_instance', False)
@@ -88,18 +88,19 @@ class YOLOv26sProfile(DetectionProfile):
             
             print(f"[INFO] Initializing loss (is_seg={is_seg}, is_e2e={is_e2e}, nc={detect_head.nc})")
             
-            if is_e2e:
-                from ultralytics.utils.loss import E2ELoss
-                if is_seg:
+            if is_seg:
+                if is_e2e:
+                    from ultralytics.utils.loss import E2ELoss
                     from ultralytics.utils.loss import v8SegmentationLoss
                     return E2ELoss(model, loss_fn=v8SegmentationLoss)
                 else:
-                    from ultralytics.utils.loss import v8DetectionLoss
-                    return E2ELoss(model, loss_fn=v8DetectionLoss)
-            else:
-                if is_seg:
                     from ultralytics.utils.loss import v8SegmentationLoss
                     return v8SegmentationLoss(model)
+            else:
+                if is_e2e:
+                    from ultralytics.utils.loss import E2ELoss
+                    from ultralytics.utils.loss import v8DetectionLoss
+                    return E2ELoss(model, loss_fn=v8DetectionLoss)
                 else:
                     from ultralytics.utils.loss import v8DetectionLoss
                     return v8DetectionLoss(model)

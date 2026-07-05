@@ -113,6 +113,22 @@ class YoloDataset(torch.utils.data.Dataset):
         else:
             print(f"[INFO] Initialized YoloDataset with {len(self.image_files)} images.")
 
+        self.coco_data = None
+        self.img_id_map = {}
+        json_path = os.path.join(os.path.dirname(images_dir), "annotations", "instances_val2017.json")
+        if os.path.exists(json_path):
+            print(f"[INFO] Found COCO annotations at {json_path}. Parsing for masks...")
+            import json
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            self.coco_data = {}
+            for img in data['images']:
+                self.img_id_map[img['file_name']] = img['id']
+                self.coco_data[img['id']] = []
+            for ann in data['annotations']:
+                if ann['image_id'] in self.coco_data and 'segmentation' in ann and isinstance(ann['segmentation'], list) and len(ann['segmentation']) > 0:
+                    self.coco_data[ann['image_id']].append(ann)
+
     def __len__(self):
         return len(self.image_files)
 
@@ -131,14 +147,53 @@ class YoloDataset(torch.utils.data.Dataset):
         letterboxed, ratio, (dw, dh) = letterbox(img, new_shape=self.input_shape)
         r = ratio[0]  # scale ratio
 
-        # 2. Parse labels from matching .txt file
+        # 2. Parse labels
         boxes = []
         classes = []
+        masks = []
         
         stem, _ = os.path.splitext(filename)
         label_path = os.path.join(self.labels_dir, f"{stem}.txt")
         
-        if os.path.exists(label_path):
+        if self.coco_data is not None and filename in self.img_id_map:
+            img_id = self.img_id_map[filename]
+            coco91_to_coco80 = {1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7, 9: 8, 10: 9, 11: 10, 13: 11, 14: 12, 15: 13, 16: 14, 17: 15, 18: 16, 19: 17, 20: 18, 21: 19, 22: 20, 23: 21, 24: 22, 25: 23, 27: 24, 28: 25, 31: 26, 32: 27, 33: 28, 34: 29, 35: 30, 36: 31, 37: 32, 38: 33, 39: 34, 40: 35, 41: 36, 42: 37, 43: 38, 44: 39, 46: 40, 47: 41, 48: 42, 49: 43, 50: 44, 51: 45, 52: 46, 53: 47, 54: 48, 55: 49, 56: 50, 57: 51, 58: 52, 59: 53, 60: 54, 61: 55, 62: 56, 63: 57, 64: 58, 65: 59, 67: 60, 70: 61, 72: 62, 73: 63, 74: 64, 75: 65, 76: 66, 77: 67, 78: 68, 79: 69, 80: 70, 81: 71, 82: 72, 84: 73, 85: 74, 86: 75, 87: 76, 88: 77, 89: 78, 90: 79}
+            
+            for ann in self.coco_data[img_id]:
+                if ann['category_id'] not in coco91_to_coco80:
+                    continue
+                class_id = coco91_to_coco80[ann['category_id']]
+                
+                # COCO bbox: [x_min, y_min, width, height] in absolute pixels
+                x_min, y_min, bw, bh = ann['bbox']
+                cx_orig = x_min + bw / 2.0
+                cy_orig = y_min + bh / 2.0
+                
+                # Convert to normalized YOLO coordinates in target shape
+                cx_target = (cx_orig * r + dw) / target_w
+                cy_target = (cy_orig * r + dh) / target_h
+                w_target = (bw * r) / target_w
+                h_target = (bh * r) / target_h
+                
+                cx_target = max(0.0, min(1.0, cx_target))
+                cy_target = max(0.0, min(1.0, cy_target))
+                w_target = max(0.0, min(1.0, w_target))
+                h_target = max(0.0, min(1.0, h_target))
+                
+                boxes.append([cx_target, cy_target, w_target, h_target])
+                classes.append(class_id)
+                
+                # Generate mask
+                mask = np.zeros((target_h, target_w), dtype=np.uint8)
+                for seg in ann['segmentation']:
+                    poly = np.array(seg).reshape((int(len(seg) / 2), 2))
+                    # Transform polygon coordinates using letterbox params
+                    poly[:, 0] = poly[:, 0] * r + dw
+                    poly[:, 1] = poly[:, 1] * r + dh
+                    cv2.fillPoly(mask, [poly.astype(np.int32)], 1)
+                masks.append(mask)
+
+        elif os.path.exists(label_path):
             with open(label_path, 'r') as f:
                 for line in f:
                     line = line.strip()
@@ -151,13 +206,11 @@ class YoloDataset(torch.utils.data.Dataset):
                     cx_orig, cy_orig, w_orig_norm, h_orig_norm = map(float, tokens[1:5])
 
                     # Shift and scale coordinates to match the letterbox pad/scale
-                    # x_norm_target = (x_norm_orig * W_orig * r + dw) / W_target
                     cx_target = (cx_orig * w_orig * r + dw) / target_w
                     cy_target = (cy_orig * h_orig * r + dh) / target_h
                     w_target = (w_orig_norm * w_orig * r) / target_w
                     h_target = (h_orig_norm * h_orig * r) / target_h
 
-                    # Clip to bounds [0, 1]
                     cx_target = max(0.0, min(1.0, cx_target))
                     cy_target = max(0.0, min(1.0, cy_target))
                     w_target = max(0.0, min(1.0, w_target))
@@ -165,6 +218,9 @@ class YoloDataset(torch.utils.data.Dataset):
 
                     boxes.append([cx_target, cy_target, w_target, h_target])
                     classes.append(class_id)
+                    
+                    # Dummy mask fallback for TXT without polygons
+                    masks.append(np.zeros((target_h, target_w), dtype=np.uint8))
 
         # 3. Apply augmentations if requested
         if self.augment and len(boxes) > 0:
@@ -179,10 +235,19 @@ class YoloDataset(torch.utils.data.Dataset):
         # Wrap targets
         bboxes_tensor = torch.tensor(boxes, dtype=torch.float32) if len(boxes) > 0 else torch.zeros((0, 4), dtype=torch.float32)
         classes_tensor = torch.tensor(classes, dtype=torch.int64) if len(classes) > 0 else torch.zeros((0,), dtype=torch.int64)
+        masks_tensor = torch.tensor(np.array(masks), dtype=torch.float32) if len(masks) > 0 else torch.zeros((0, target_h, target_w), dtype=torch.float32)
+
+        # Generate semantic masks for multi-task segmentation loss
+        sem_mask = np.zeros((target_h, target_w), dtype=np.int64)
+        for i, mask in enumerate(masks):
+            sem_mask[mask > 0] = classes[i]
+        sem_masks_tensor = torch.tensor(sem_mask, dtype=torch.float32)
 
         target = {
             "bboxes": bboxes_tensor,
-            "cls": classes_tensor
+            "cls": classes_tensor,
+            "masks": masks_tensor,
+            "sem_masks": sem_masks_tensor
         }
 
         return img_tensor, target
@@ -219,6 +284,9 @@ def yolo_collate_fn(batch):
     batch_classes = []
     batch_indices = []
 
+    batch_masks = []
+    batch_sem_masks = []
+
     for i, (img, target) in enumerate(batch):
         images.append(img)
         num_boxes = target['bboxes'].shape[0]
@@ -226,6 +294,10 @@ def yolo_collate_fn(batch):
             batch_bboxes.append(target['bboxes'])
             batch_classes.append(target['cls'])
             batch_indices.append(torch.full((num_boxes,), i, dtype=torch.float32))
+            if 'masks' in target:
+                batch_masks.append(target['masks'])
+        if 'sem_masks' in target:
+            batch_sem_masks.append(target['sem_masks'].unsqueeze(0))
 
     images_tensor = torch.stack(images, dim=0)
 
@@ -244,14 +316,17 @@ def yolo_collate_fn(batch):
         "batch_idx": batch_idx_tensor
     }
 
-    # Provide dummy masks to satisfy v8SegmentationLoss during VAIQ sensitivity analysis.
-    # Note: If fine-tuning a segmentation model is needed later, YoloDataset must be updated
-    # to load real segmentation masks from COCO polygons instead of using these zeros!
-    if bboxes_tensor.shape[0] > 0:
+    if len(batch_masks) > 0:
+        targets_dict["masks"] = torch.cat(batch_masks, dim=0)
+    else:
         H, W = images_tensor.shape[2], images_tensor.shape[3]
         targets_dict["masks"] = torch.zeros((bboxes_tensor.shape[0], H, W), dtype=torch.float32)
+
+    if len(batch_sem_masks) > 0:
+        targets_dict["sem_masks"] = torch.cat(batch_sem_masks, dim=0)
     else:
-        targets_dict["masks"] = torch.zeros((0, images_tensor.shape[2], images_tensor.shape[3]), dtype=torch.float32)
+        H, W = images_tensor.shape[2], images_tensor.shape[3]
+        targets_dict["sem_masks"] = torch.zeros((images_tensor.shape[0], H, W), dtype=torch.float32)
 
     return images_tensor, targets_dict
 
