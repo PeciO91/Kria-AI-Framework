@@ -63,12 +63,23 @@ def process_mask(protos, masks_in, bboxes, shape, upsample=False):
 
 def scale_image_masks(masks, bboxes, img1_shape, img0_shape):
     """
-    masks: (n, ih, iw) float32 sigmoid probabilities, ih/iw == img1_shape
+    masks: (n, sh, sw) float32 sigmoid probabilities. The source resolution
+        (sh, sw) may equal the padded network input (img1_shape) OR a lower
+        prototype resolution (e.g. 160x160). The img1->source scale is folded
+        into the affine below, so we can warp straight from prototype space and
+        skip an intermediate full-input upsample. When sh/sw == img1_shape the
+        transform reduces EXACTLY to the previous full-input version.
     bboxes: (n, 4) x1,y1,x2,y2 in img1_shape (padded network input) space
     """
     n = masks.shape[0]
     if n == 0:
         return np.empty((0, img0_shape[0], img0_shape[1]), dtype=masks.dtype)
+
+    # Ratio of the actual mask source resolution to the network input space in
+    # which bboxes/pad/gain are expressed. rx == ry == 1 for full-input masks.
+    src_h, src_w = masks.shape[1], masks.shape[2]
+    rx = src_w / img1_shape[1]
+    ry = src_h / img1_shape[0]
 
     gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])
     pad_w = (img1_shape[1] - img0_shape[1] * gain) / 2
@@ -98,11 +109,14 @@ def scale_image_masks(masks, bboxes, img1_shape, img0_shape):
         if dst_w <= 0 or dst_h <= 0:
             continue
 
-        # dst->src affine, derived from the SAME cv2.resize convention as the
-        # reference full-canvas resize (top/left already folds in the pad crop)
+        # dst->src affine (WARP_INVERSE_MAP). rx/ry fold the img1->source scale
+        # so we sample directly from the (possibly prototype-resolution) mask.
+        # Derivation: src_input = scale*local + (edge + (o+0.5)*scale - 0.5),
+        # then src_proto = (src_input + 0.5)*r - 0.5, which simplifies to the
+        # coefficients below. Reduces to the full-input form when rx == ry == 1.
         M = np.array([
-            [scale_x, 0, left + (odx1 + 0.5) * scale_x - 0.5],
-            [0, scale_y, top + (ody1 + 0.5) * scale_y - 0.5],
+            [scale_x * rx, 0, (left + (odx1 + 0.5) * scale_x) * rx - 0.5],
+            [0, scale_y * ry, (top + (ody1 + 0.5) * scale_y) * ry - 0.5],
         ], dtype=np.float32)
 
         scaled_masks[i, ody1:ody2, odx1:odx2] = cv2.warpAffine(

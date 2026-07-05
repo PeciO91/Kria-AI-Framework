@@ -160,7 +160,7 @@ MODELS = {
         # per-instance mask after sigmoid.
         "num_masks": 32,
         "num_protos": 256,
-        "conf_threshold": 0.1,
+        "conf_threshold": 0.4,
         "iou_threshold": 0.45,
         "mask_threshold": 0.5,
         # Output convs of the Segment26 head must keep their channel counts
@@ -174,8 +174,12 @@ MODELS = {
             "model.22.cv4.*.2",
             "model.22.one2one_cv2.*.2",
             "model.22.one2one_cv3.*.2",
-            "model.22.one2one_cv4.*.2"
+            "model.22.one2one_cv4.*.2",
+            "model.22.proto.*",
+            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[6]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.117"
         ]
+
+
     },
     "unet_res18": {
         "source": "custom",

@@ -249,6 +249,7 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
     print(f"[INFO] Loading weights from: {abs_weight_path}")
     checkpoint = torch.load(abs_weight_path, map_location=device)
     state_dict = extract_state_dict(checkpoint)
+    model.load_state_dict(state_dict, strict=False)
 
     # Defensive shape check: detect slim-vs-full mismatch and report clearly.
     if pruning_applied:

@@ -8,6 +8,7 @@ import threading
 import queue
 import argparse
 import json
+import traceback
 
 import numpy as np
 import cv2
@@ -200,6 +201,7 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
     stage_start = _profile_start(profiler)
     runner = vart.Runner.create_runner(dpu_subgraph, "run")
     _profile_end(profiler, "consumer_runner_create", stage_start)
+    print(f"[DEBUG] Consumer {thread_id}: DPU runner created, entering loop.")
 
     stage_start = _profile_start(profiler)
     output_tensors = runner.get_output_tensors()
@@ -313,8 +315,9 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
                 xyxy_dpu[:, 2] = final_boxes[:, 0] + final_boxes[:, 2]
                 xyxy_dpu[:, 3] = final_boxes[:, 1] + final_boxes[:, 3]
 
-                # Assemble masks
-                masks = process_mask(proto, mask_coeffs, xyxy_dpu, dpu_shape, upsample=True)
+                # Assemble masks at prototype resolution; scale_image_masks
+                # warps straight to original image space (no 160->640 upsample).
+                masks = process_mask(proto, mask_coeffs, xyxy_dpu, dpu_shape, upsample=False)
                 _profile_end(profiler, "mask_assembly", stage_start)
 
                 stage_start = _profile_start(profiler)
@@ -408,6 +411,46 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
     results[thread_id] = (local_total, local_dpu_time, local_class_hist, profiler, local_eval_records, local_gt_counts)
     del runner
 
+
+# =============================================================
+# THREAD WRAPPERS: surface exceptions (default threads swallow them)
+# =============================================================
+def _safe_producer(worker_args):
+    """Run producer_worker, printing any exception instead of dying silently."""
+    try:
+        producer_worker(*worker_args)
+    except Exception:
+        print(f"\n[ERROR] Producer thread crashed:")
+        traceback.print_exc()
+        sys.stdout.flush()
+
+
+def _safe_consumer(worker_args):
+    """Run consumer_worker, printing any exception instead of dying silently.
+
+    On crash, keep draining the input queue so the producers do not block
+    forever on a full queue (which would hang the main thread at ``t.join()``).
+    """
+    thread_id = worker_args[0]
+    input_queue = worker_args[1]
+    try:
+        consumer_worker(*worker_args)
+    except Exception:
+        print(f"\n[ERROR] Consumer {thread_id} crashed:")
+        traceback.print_exc()
+        sys.stdout.flush()
+        # Drain so producers unblock; re-inject the sentinel for any siblings.
+        while True:
+            item = input_queue.get()
+            input_queue.task_done()
+            if item is None:
+                try:
+                    input_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+                break
+
+
 # =============================================================
 # MAIN
 # =============================================================
@@ -474,6 +517,12 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
     det_order, mask_order, proto_idx = resolve_segmentation_outputs(
         out_dims, num_classes, num_masks, reg_max)
 
+    print(f"[DEBUG] out_dims={out_dims}")
+    print(f"[DEBUG] num_classes={num_classes} num_masks={num_masks} "
+          f"reg_max={reg_max}")
+    print(f"[DEBUG] det_order={det_order} mask_order={mask_order} "
+          f"proto_idx={proto_idx} fix_pos_outs={fix_pos_outs}")
+
     all_images = [os.path.join(dataset_path, f)
                   for f in os.listdir(dataset_path)
                   if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
@@ -510,11 +559,11 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
         c_threads = []
         for i in range(num_consumers):
             consumer_profiler = StageProfiler(enabled=True) if profile_enabled else None
-            t = threading.Thread(target=consumer_worker, args=(
+            t = threading.Thread(target=_safe_consumer, args=((
                 i, img_queue, write_queue, subgraph, out_dir, m_cfg, d_cfg,
                 fix_pos_outs, det_order, mask_order, proto_idx, progress, results,
                 consumer_profiler, draw_outputs, save_outputs, evaluate_accuracy,
-                labels_dir if labels_dir else d_cfg.get('board_labels')))
+                labels_dir if labels_dir else d_cfg.get('board_labels')),))
             t.start()
             c_threads.append(t)
 
@@ -524,15 +573,32 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
                 break
             producer_profiler = StageProfiler(enabled=True) if profile_enabled else None
             producer_profilers.append(producer_profiler)
-            t = threading.Thread(target=producer_worker, args=(
-                chunks[i], img_queue, dpu_shape, lut, producer_profiler))
+            t = threading.Thread(target=_safe_producer, args=((
+                chunks[i], img_queue, dpu_shape, lut, producer_profiler),))
             t.start()
             p_threads.append(t)
 
-        for t in p_threads:
-            t.join()
+        # Wait for producers, but watch for consumer death to avoid a silent
+        # deadlock: if every consumer exits while the queue is full, producers
+        # block forever on put(). Surface that instead of hanging at join().
+        while any(t.is_alive() for t in p_threads):
+            if not any(t.is_alive() for t in c_threads):
+                print("\n[ERROR] All consumer threads exited before producers "
+                      "finished. Producers were likely blocked on a full queue. "
+                      "See the consumer traceback above.")
+                break
+            sys.stdout.write(
+                f"\r[DEBUG] producers alive {sum(t.is_alive() for t in p_threads)}"
+                f"/{len(p_threads)}  consumers alive "
+                f"{sum(t.is_alive() for t in c_threads)}/{len(c_threads)}  "
+                f"queue {img_queue.qsize()}  progress {progress.value}/{total_imgs}   ")
+            sys.stdout.flush()
+            time.sleep(0.5)
         for _ in range(num_consumers):
-            img_queue.put(None)
+            try:
+                img_queue.put(None, timeout=5)
+            except queue.Full:
+                break
 
         print(f"[INFO] DPU Processing & Post-processing started...")
         while any(t.is_alive() for t in c_threads):

@@ -73,8 +73,36 @@ class YOLOv26sProfile(DetectionProfile):
                 if detect_head is None:
                     raise RuntimeError("Could not find YOLOv26s Detect head in model structure.")
 
-            print(f"[INFO] Initializing E2EDetectLoss with Detect head (nc={detect_head.nc}, end2end={detect_head.end2end})")
-            return E2EDetectLoss(detect_head)
+            # Mock model.args if missing or dict (since we load from raw .pt and bypass Trainer)
+            from types import SimpleNamespace
+            if not hasattr(model, 'args') or isinstance(model.args, dict):
+                base_args = model.args if hasattr(model, 'args') and isinstance(model.args, dict) else {}
+                base_args.update({'box': 7.5, 'cls': 0.5, 'dfl': 1.5, 'reg_max': 16, 'overlap_mask': True})
+                model.args = SimpleNamespace(**base_args)
+            elif not hasattr(model.args, 'overlap_mask'):
+                model.args.overlap_mask = True
+
+            # Initialize correct loss type based on end2end and seg_instance flags
+            is_seg = self.m_cfg.get('seg_instance', False)
+            is_e2e = getattr(detect_head, 'end2end', False)
+            
+            print(f"[INFO] Initializing loss (is_seg={is_seg}, is_e2e={is_e2e}, nc={detect_head.nc})")
+            
+            if is_e2e:
+                from ultralytics.utils.loss import E2ELoss
+                if is_seg:
+                    from ultralytics.utils.loss import v8SegmentationLoss
+                    return E2ELoss(model, loss_fn=v8SegmentationLoss)
+                else:
+                    from ultralytics.utils.loss import v8DetectionLoss
+                    return E2ELoss(model, loss_fn=v8DetectionLoss)
+            else:
+                if is_seg:
+                    from ultralytics.utils.loss import v8SegmentationLoss
+                    return v8SegmentationLoss(model)
+                else:
+                    from ultralytics.utils.loss import v8DetectionLoss
+                    return v8DetectionLoss(model)
         except ImportError as e:
             raise ImportError(
                 f"Failed to import E2EDetectLoss from local Ultralytics repository: {e}. "
@@ -139,9 +167,10 @@ def get_profile(m_cfg):
     Factory function to retrieve the correct DetectionProfile for the configured model.
     """
     name = m_cfg['name'].lower()
-    if 'yolov26s' in name:
+    if 'yolov26' in name or m_cfg.get('seg_instance'):
         return YOLOv26sProfile(m_cfg)
     elif 'yolov5n' in name:
         return YOLOv5nProfile(m_cfg)
     else:
         raise ValueError(f"No detection profile registered for model: {m_cfg['name']}")
+

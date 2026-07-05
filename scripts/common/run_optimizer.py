@@ -30,6 +30,22 @@ from torchvision.datasets import ImageFolder
 from pytorch_nndct import IterativePruningRunner
 from pytorch_nndct import OneStepPruningRunner
 
+# --- MONKEY PATCH FOR VAIQ DEEPCOPY ISSUE ---
+# Vitis AI's __torch_function__ override breaks deepcopy for some tensors/parameters.
+# This patch catches the "new_empty" error and falls back to clone().
+_original_tensor_deepcopy = torch.Tensor.__deepcopy__
+def _safe_tensor_deepcopy(self, memo):
+    try:
+        return _original_tensor_deepcopy(self, memo)
+    except RuntimeError as e:
+        if "new_empty" in str(e):
+            if isinstance(self, torch.nn.Parameter):
+                return torch.nn.Parameter(self.clone(), requires_grad=self.requires_grad)
+            return self.clone()
+        raise e
+torch.Tensor.__deepcopy__ = _safe_tensor_deepcopy
+# --------------------------------------------
+
 # Project-root import path (PROJECT_ROOT + scripts/common/ added to sys.path).
 from _bootstrap import PROJECT_ROOT  # noqa: F401
 
@@ -60,13 +76,13 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
                                  d_cfg['normalization']['std']),
         ])
         dataset = ImageFolder(root=d_cfg['calib_path'], transform=base_transform)
-        # Limit to subset_len with random sampling to avoid bias from
+        # limit to subset_len with random sampling to avoid bias from
         # alphabetical ordering (ImageFolder sorts classes by name).
         if len(dataset) > subset_len:
             random.seed(42)  # Fixed seed for reproducibility
             indices = random.sample(range(len(dataset)), subset_len)
             dataset = Subset(dataset, indices)
-    elif task_type == 'detection':
+    elif task_type == 'detection' or m_cfg.get('seg_instance'):
         yolo_transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(d_cfg['normalization']['mean'],
@@ -97,7 +113,7 @@ def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=32):
             indices = list(range(subset_len))
             dataset = Subset(dataset, indices)
     
-    collate_fn = yolo_collate_fn if task_type == 'detection' else None
+    collate_fn = yolo_collate_fn if task_type == 'detection' or m_cfg.get('seg_instance') else None
     return DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
 
@@ -113,7 +129,7 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
     task_type = m_cfg.get('type', 'classification')
     
     # Build validation loader based on task type
-    if task_type == 'detection':
+    if task_type == 'detection' or m_cfg.get('seg_instance'):
         print("[INFO] Constructing COCO val set for detection sensitivity analysis.")
         subset_indices = build_or_load_subset_indices(
             split="val",
@@ -135,7 +151,7 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
     print(f"[INFO] Running sensitivity analysis on {len(loader.dataset)} samples...")
 
     # Define evaluation function
-    if task_type == 'detection':
+    if task_type == 'detection' or m_cfg.get('seg_instance'):
         def detection_loss_eval(model, dataloader):
             device_local = next(model.parameters()).device
             profile = get_profile(m_cfg)
@@ -154,7 +170,11 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
                         if isinstance(loss_val, dict):
                             loss_val = sum(l for l in loss_val.values())
                         elif isinstance(loss_val, (list, tuple)):
-                            loss_val = sum(loss_val)
+                            loss_val = loss_val[0]
+                        
+                        if hasattr(loss_val, 'sum'):
+                            loss_val = loss_val.sum()
+                        
                         total_loss += loss_val.item()
                         count += 1
             finally:
@@ -165,16 +185,38 @@ def run_sensitivity_analysis(runner, m_cfg, d_cfg, device, subset_len=200):
         eval_fn = detection_loss_eval
     else:
         eval_fn = evaluate_accuracy
+    # Retrieve excludes if applicable
+    excludes = []
+    if task_type == 'detection' or m_cfg.get('seg_instance'):
+        profile = get_profile(m_cfg)
+        excludes = profile.prune_excludes(None)
 
-    try:
-        runner.ana(eval_fn, args=(loader,))
-        print("[SUCCESS] Sensitivity analysis complete.")
-        print("[INFO] Analysis results saved to .vai/ directory.")
-    except Exception as e:
-        import traceback
-        print(f"[ERROR] Sensitivity analysis failed: {e}")
-        traceback.print_exc()
-        print("[INFO] Continuing with pruning using specified ratio...")
+    import re
+    max_retries = 30
+    for attempt in range(max_retries):
+        try:
+            runner.ana(eval_fn, args=(loader,), excludes=excludes)
+            print("[SUCCESS] Sensitivity analysis complete.")
+            print("[INFO] Analysis results saved to .vai/ directory.")
+            break
+        except Exception as e:
+            error_str = str(e)
+            if "Must exclude node from pruning:" in error_str:
+                node_part = error_str.split("Must exclude node from pruning:")[1].split("\n")[0].strip()
+                if node_part.endswith("."):
+                    node_part = node_part[:-1]
+                
+                node_name = node_part
+                print(f"[WARN] VAIQ constraint hit (Attempt {attempt+1}). Auto-excluding: {node_name}")
+                if node_name not in excludes:
+                    excludes.append(node_name)
+                    continue
+            
+            import traceback
+            print(f"[ERROR] Sensitivity analysis failed: {e}")
+            traceback.print_exc()
+            print("[INFO] Continuing with pruning using specified ratio...")
+            break
     
     return runner
 
@@ -215,7 +257,7 @@ def run_subnet_search(runner, m_cfg, d_cfg, device, ratio,
           f"({len(loader.dataset)} samples, {num_calib_forward} BN-calib batches)...")
 
     # Define evaluation function and excludes for search
-    if task_type == 'detection':
+    if task_type == 'detection' or m_cfg.get('seg_instance'):
         profile = get_profile(m_cfg)
         excludes = profile.prune_excludes(None)
         def detection_loss_eval(model, dataloader):
@@ -287,13 +329,14 @@ def run_pruning(model, runner, m_cfg, device, ratio=0.2, before_metrics=None):
     
     print(f"[INFO] Applying structural pruning with removal_ratio {ratio}...")
     
-    # Retrieve excludes if task type is detection
+    # Retrieve excludes if task type is detection or segmentation
     task_type = m_cfg.get('type', 'classification')
     excludes = []
-    if task_type == 'detection':
+    if task_type == 'detection' or m_cfg.get('seg_instance'):
         profile = get_profile(m_cfg)
         excludes = profile.prune_excludes(model)
         print(f"[INFO] Excluding layers from pruning: {excludes}")
+
         
     # Apply pruning using IterativePruningRunner with excludes
     pruned_model = runner.prune(removal_ratio=ratio, excludes=excludes)
@@ -349,7 +392,7 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
         print(f"[INFO] Optimizer: SGD (lr={lr}, momentum=0.9, weight_decay=1e-4)")
-    elif task_type == 'detection':
+    elif task_type == 'detection' or m_cfg.get('seg_instance'):
         profile = get_profile(m_cfg)
         profile.prepare_for_finetune(model)
         criterion = profile.loss_fn(model)
@@ -377,7 +420,7 @@ def run_finetune(model, m_cfg, d_cfg, device, epochs=5, lr=1e-3, subset_len=200)
                 labels = labels.to(device)
                 outputs = model(images)
                 loss = criterion(outputs, labels)
-            elif task_type == 'detection':
+            elif task_type == 'detection' or m_cfg.get('seg_instance'):
                 targets = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in labels.items()}
                 outputs = profile.forward_for_loss(model, images)
                 loss = criterion(outputs, targets)

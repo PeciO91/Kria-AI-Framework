@@ -244,6 +244,15 @@ def yolo_collate_fn(batch):
         "batch_idx": batch_idx_tensor
     }
 
+    # Provide dummy masks to satisfy v8SegmentationLoss during VAIQ sensitivity analysis.
+    # Note: If fine-tuning a segmentation model is needed later, YoloDataset must be updated
+    # to load real segmentation masks from COCO polygons instead of using these zeros!
+    if bboxes_tensor.shape[0] > 0:
+        H, W = images_tensor.shape[2], images_tensor.shape[3]
+        targets_dict["masks"] = torch.zeros((bboxes_tensor.shape[0], H, W), dtype=torch.float32)
+    else:
+        targets_dict["masks"] = torch.zeros((0, images_tensor.shape[2], images_tensor.shape[3]), dtype=torch.float32)
+
     return images_tensor, targets_dict
 
 
