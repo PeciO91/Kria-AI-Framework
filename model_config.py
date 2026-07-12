@@ -104,7 +104,6 @@ MODELS = {
         "decoder": "ultralytics_anchor_free",
         "num_classes": 80,
         "reg_max": 1,
-        "end2end": True,
         "max_det": 300,
         "strides": [8, 16, 32],
         # Output convs of the Detect head must keep their channel counts during
@@ -133,14 +132,12 @@ MODELS = {
         "decoder": "ultralytics_anchor_free",
         "num_classes": 80,
         "reg_max": 1,
-        "end2end": True,
         "max_det": 300,
         "strides": [8, 16, 32],
         # Mask head: 32 coefficients per anchor decoded against 256-channel
         # prototypes (Segment26 / Proto26). mask_threshold binarizes the final
         # per-instance mask after sigmoid.
         "num_masks": 32,
-        "num_protos": 256,
         "conf_threshold": 0.4,
         "iou_threshold": 0.45,
         "mask_threshold": 0.5,

@@ -215,7 +215,6 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
     conf_thresh = m_cfg.get('conf_threshold', 0.25)
     iou_thresh = m_cfg.get('iou_threshold', 0.45)
     mask_thresh = m_cfg.get('mask_threshold', 0.5)
-    end2end = m_cfg.get('end2end', False)
     max_det = m_cfg.get('max_det', 300)
     dpu_shape = tuple(runner.get_input_tensors()[0].dims)[1:3]  # H, W
 
@@ -274,7 +273,7 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
         # 3. Post-process
         if boxes.shape[0] > 0:
             stage_start = _profile_start(profiler)
-            if end2end:
+            if m_cfg.get('decoder') == 'ultralytics_anchor_free':
                 if scores.shape[0] > max_det:
                     indices = np.argpartition(-scores, max_det)[:max_det]
                 else:

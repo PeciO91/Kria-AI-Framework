@@ -351,7 +351,6 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
 
     conf_thresh = m_cfg.get('conf_threshold', 0.25)
     iou_thresh = m_cfg.get('iou_threshold', 0.45)
-    end2end = m_cfg.get('end2end', False)
     max_det = m_cfg.get('max_det', 300)
     dpu_shape = tuple(runner.get_input_tensors()[0].dims)[1:3]  # H, W
 
@@ -416,7 +415,7 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
         #    bipartite matching to produce duplicate-free predictions.
         if boxes.shape[0] > 0:
             stage_start = _profile_start(profiler)
-            if end2end:
+            if decoder == 'ultralytics_anchor_free':
                 # Top-k by score, already filtered by conf_threshold in
                 # the decoder logit space.
                 if scores.shape[0] > max_det:
