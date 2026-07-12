@@ -222,9 +222,12 @@ class YoloDataset(torch.utils.data.Dataset):
                     # Dummy mask fallback for TXT without polygons
                     masks.append(np.zeros((target_h, target_w), dtype=np.uint8))
 
-        # 3. Apply augmentations if requested
+        # 3. Apply augmentations if requested. Masks are transformed in
+        # lockstep with the image so mask/box supervision stays aligned.
+        # sem_masks is regenerated from masks further below, so it follows
+        # automatically.
         if self.augment and len(boxes) > 0:
-            letterboxed, boxes = self._apply_augmentations(letterboxed, boxes)
+            letterboxed, boxes, masks = self._apply_augmentations(letterboxed, boxes, masks)
 
         # 4. Standard Normalize and ToTensor
         img_tensor = torch.from_numpy(letterboxed).permute(2, 0, 1).float() / 255.0
@@ -252,12 +255,16 @@ class YoloDataset(torch.utils.data.Dataset):
 
         return img_tensor, target
 
-    def _apply_augmentations(self, img, boxes):
+    def _apply_augmentations(self, img, boxes, masks=None):
         boxes = np.array(boxes)
         # Horizontal Flip (50% probability)
         if random.random() < 0.5:
             img = cv2.flip(img, 1)
             boxes[:, 0] = 1.0 - boxes[:, 0]
+            # Mirror instance masks in lockstep so segmentation supervision
+            # stays aligned with the flipped image.
+            if masks is not None:
+                masks = [cv2.flip(m, 1) for m in masks]
 
         # HSV Jitter (50% probability)
         if random.random() < 0.5:
@@ -270,7 +277,7 @@ class YoloDataset(torch.utils.data.Dataset):
             hsv[:, :, 2] = np.clip(hsv[:, :, 2] * v_gain, 0, 255)
             img = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
 
-        return img, list(boxes)
+        return img, list(boxes), masks
 
 
 def yolo_collate_fn(batch):

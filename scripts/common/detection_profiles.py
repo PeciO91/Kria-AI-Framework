@@ -3,6 +3,7 @@ Detection profile abstraction layer.
 Unifies model-specific loss retrieval, pruning excludes, and forward pass output formatting
 for YOLOv5n and YOLOv26s models under a common interface.
 """
+import fnmatch
 from abc import ABC, abstractmethod
 import torch
 
@@ -127,10 +128,40 @@ class YOLOv26sProfile(DetectionProfile):
 
     def prune_excludes(self, model):
         """
-        Returns module name patterns that must not be pruned to maintain detection head structure.
+        Returns pruning excludes that protect the Detect/Segment26 head output
+        convs (box/cls/mask/proto), whose channel counts are contractually
+        fixed for DPU decoding.
+
+        Vitis AI's ``excluded_node_names()`` only matches EXACT graph node-name
+        strings or ``nn.Module`` objects - it does NOT expand globs. The config
+        expresses the head output convs as dotted glob patterns (e.g.
+        ``"model.22.cv2.*.2"``), which never match a node name and are silently
+        ignored. Here we resolve those patterns against ``model.named_modules()``
+        into the actual ``nn.Module`` objects so they are truly excluded. Exact
+        XIR node names (those containing ``"::"``) are passed through unchanged.
+        When ``model`` is ``None`` (e.g. early sensitivity setup) the raw config
+        list is returned as-is.
         """
-        # Return the 12 output convs configured in model_config.py
-        return self.m_cfg.get('prune_excludes', [])
+        raw = self.m_cfg.get('prune_excludes', [])
+        if model is None:
+            return list(raw)
+
+        module_by_name = dict(model.named_modules())
+        resolved = []
+        for pattern in raw:
+            # Exact Vitis AI graph node name: pass through untouched.
+            if '::' in pattern:
+                resolved.append(pattern)
+                continue
+            # Dotted glob over module names -> resolve to nn.Module objects.
+            matches = [module_by_name[name] for name in module_by_name
+                       if fnmatch.fnmatch(name, pattern)]
+            if matches:
+                resolved.extend(matches)
+            else:
+                print(f"[WARN] prune exclude pattern matched no module: {pattern}")
+                resolved.append(pattern)
+        return resolved
 
     def prepare_for_finetune(self, model):
         """
