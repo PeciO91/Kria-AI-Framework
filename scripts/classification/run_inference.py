@@ -195,7 +195,6 @@ def run_inference(model_id, dataset_id, thread_override):
     avg_load_pwr = monitor.average(fallback=idle_p)
     energy_per_frame = (avg_load_pwr / fps_app) * 1000 if fps_app > 0 else 0.0
     duty_cycle = (total_dpu_busy / (total_wall_time * num_consumers)) * 100 if total_wall_time > 0 else 0.0
-    compute_eff = (fps_app * m_cfg['gops'] / DPU_PEAK_GOPS) * 100
 
     report = format_report(
         f"ANALYTICAL REPORT: {m_cfg['name'].upper()} | DPU THREADS: {num_consumers}",
@@ -211,7 +210,6 @@ def run_inference(model_id, dataset_id, thread_override):
             ("Energy per frame:", f"{energy_per_frame:.2f} mJ/img"),
             ("---", None),
             ("DPU Duty Cycle:", f"{min(duty_cycle, 100.0):.2f} %"),
-            ("DPU Compute Eff.:", f"{compute_eff:.2f} %"),
         ],
     )
     print("\n" + report)

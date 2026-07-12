@@ -649,7 +649,6 @@ def run_detection(model_id, dataset_id, thread_override, profile=False,
     avg_load_pwr = monitor.average(fallback=idle_p)
     energy_per_frame = (avg_load_pwr / fps_app) * 1000 if fps_app > 0 else 0.0
     duty_cycle = (total_dpu_time / (total_wall_time * num_consumers)) * 100 if total_wall_time > 0 else 0.0
-    compute_eff = (fps_app * m_cfg['gops'] / DPU_PEAK_GOPS) * 100
 
     report = format_report(
         f"DETECTION REPORT: {m_cfg['name'].upper()} | DPU THREADS: {num_consumers}",
