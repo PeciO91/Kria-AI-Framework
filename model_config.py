@@ -121,7 +121,6 @@ MODELS = {
         # Instance-segmentation: reuse the anchor-free detection decoder for
         # boxes/classes, then assemble per-object masks on the ARM CPU from the
         # exported mask coefficients + prototypes (see run_instance_seg.py).
-        "seg_instance": True,
         "decoder": "ultralytics_anchor_free",
         "num_classes": 8,
         "reg_max": 1,

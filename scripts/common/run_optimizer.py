@@ -401,7 +401,7 @@ def generate_slim_model_without_api(model, checkpoint_path='model_pruned.pth'):
 # ---------------------------------------------------------------------------
 
 def _is_detection_or_segmentation(m_cfg):
-    return m_cfg.get('type') in ('detection', 'segmentation') or m_cfg.get('seg_instance')
+    return m_cfg.get('type') in ('detection', 'segmentation')
 
 
 def build_finetune_loader(m_cfg, d_cfg, subset_len=200, batch_size=4):
@@ -524,7 +524,7 @@ def run_optimizer():
 
     m_cfg = get_active_model(args.model)
     if args.dataset is None:
-        if m_cfg.get('seg_instance') or m_cfg.get('type') == 'segmentation':
+        if m_cfg.get('type') == 'segmentation':
             args.dataset = 'coco'
     d_cfg = get_active_dataset(args.dataset)
 

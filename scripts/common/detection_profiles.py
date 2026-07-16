@@ -1,7 +1,7 @@
 """
 Detection profile abstraction layer.
 Unifies model-specific loss retrieval, pruning excludes, and forward pass output formatting
-for YOLOv5n and YOLOv26s models under a common interface.
+for YOLOv5n and YOLOv26 models under a common interface.
 """
 import fnmatch
 from abc import ABC, abstractmethod
@@ -43,36 +43,23 @@ class DetectionProfile(ABC):
         pass
 
 
-class YOLOv26sProfile(DetectionProfile):
+class YOLOv26Profile(DetectionProfile):
     """
-    Profile implementation for YOLOv26s (Ultralytics anchor-free end-to-end model).
+    Profile implementation for YOLOv26 (Ultralytics anchor-free end-to-end models like n, s, etc.).
     Handles E2EDetectLoss and one2one/one2many training branches.
     """
     def loss_fn(self, model):
         """
-        Constructs and returns E2EDetectLoss for YOLOv26s.
+        Constructs and returns E2ELoss for YOLOv26.
         """
         # Under Vitis AI, the model class might be wrapped, so we find the inner raw Model
-        # YOLOv26s in the local repository contains an end2end Detect head.
+        # YOLOv26 in the local repository contains an end2end Detect head.
         try:
-            # Import loss dynamically from local repo
-            from ultralytics.utils.loss import E2EDetectLoss
+            # Import losses dynamically from local repo
+            from ultralytics.utils.loss import E2ELoss, v8DetectionLoss, v8SegmentationLoss
             
             # The detect head lives at model.model[-1] in Ultralytics architecture
-            if hasattr(model, 'model') and hasattr(model.model[-1], 'nc'):
-                detect_head = model.model[-1]
-            elif hasattr(model, 'module') and hasattr(model.module, 'model'):
-                # Handle DP/DDP wrapping if any
-                detect_head = model.module.model[-1]
-            else:
-                # Fallback walk through modules
-                detect_head = None
-                for module in model.modules():
-                    if hasattr(module, 'nc') and hasattr(module, 'one2one'):
-                        detect_head = module
-                        break
-                if detect_head is None:
-                    raise RuntimeError("Could not find YOLOv26s Detect head in model structure.")
+            detect_head = model.model[-1]
 
             # Mock model.args if missing or dict (since we load from raw .pt and bypass Trainer)
             from types import SimpleNamespace
@@ -83,31 +70,18 @@ class YOLOv26sProfile(DetectionProfile):
             elif not hasattr(model.args, 'overlap_mask'):
                 model.args.overlap_mask = False
 
-            # Initialize correct loss type based on end2end and seg_instance flags
-            is_seg = self.m_cfg.get('seg_instance', False)
-            is_e2e = getattr(detect_head, 'end2end', False)
+            # Initialize correct loss type (always E2ELoss for YOLOv26)
+            is_seg = self.m_cfg.get('type') == 'segmentation'
             
-            print(f"[INFO] Initializing loss (is_seg={is_seg}, is_e2e={is_e2e}, nc={detect_head.nc})")
+            print(f"[INFO] Initializing YOLOv26 {'Segmentation' if is_seg else 'Detection'} loss (nc={detect_head.nc})")
             
             if is_seg:
-                if is_e2e:
-                    from ultralytics.utils.loss import E2ELoss
-                    from ultralytics.utils.loss import v8SegmentationLoss
-                    return E2ELoss(model, loss_fn=v8SegmentationLoss)
-                else:
-                    from ultralytics.utils.loss import v8SegmentationLoss
-                    return v8SegmentationLoss(model)
+                return E2ELoss(model, loss_fn=v8SegmentationLoss)
             else:
-                if is_e2e:
-                    from ultralytics.utils.loss import E2ELoss
-                    from ultralytics.utils.loss import v8DetectionLoss
-                    return E2ELoss(model, loss_fn=v8DetectionLoss)
-                else:
-                    from ultralytics.utils.loss import v8DetectionLoss
-                    return v8DetectionLoss(model)
+                return E2ELoss(model, loss_fn=v8DetectionLoss)
         except ImportError as e:
             raise ImportError(
-                f"Failed to import E2EDetectLoss from local Ultralytics repository: {e}. "
+                f"Failed to import E2ELoss or base losses from local Ultralytics repository: {e}. "
                 f"Ensure 'repo_path' in model_config.py points to the local ultralytics-main."
             )
 
@@ -165,15 +139,13 @@ class YOLOv26sProfile(DetectionProfile):
 
     def prepare_for_finetune(self, model):
         """
-        Prepares YOLOv26s for fine-tuning by ensuring the loss-attaching components are active.
+        Prepares YOLOv26 for fine-tuning by ensuring the loss-attaching components are active.
         """
         # Ensure end2end flag is enabled on the detect head so both branches are calculated
-        for m in model.modules():
-            if hasattr(m, 'nc') and hasattr(m, 'one2one'):
-                m.end2end = True
-                m.training = True
-                print("[INFO] Configured Detect head module training parameters for fine-tuning.")
-                break
+        detect_head = model.model[-1]
+        detect_head.end2end = True
+        detect_head.training = True
+        print("[INFO] Configured Detect head module training parameters for fine-tuning.")
 
 
 class YOLOv5nProfile(DetectionProfile):
@@ -199,8 +171,8 @@ def get_profile(m_cfg):
     Factory function to retrieve the correct DetectionProfile for the configured model.
     """
     name = m_cfg['name'].lower()
-    if 'yolov26' in name or m_cfg.get('seg_instance'):
-        return YOLOv26sProfile(m_cfg)
+    if 'yolov26' in name or m_cfg.get('type') == 'segmentation':
+        return YOLOv26Profile(m_cfg)
     elif 'yolov5n' in name:
         return YOLOv5nProfile(m_cfg)
     else:

@@ -862,7 +862,7 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
         print("[ERROR] --accuracy is not supported with --video.")
         return
 
-    if m_cfg.get('type') != 'segmentation' or not m_cfg.get('seg_instance', False):
+    if m_cfg.get('type') != 'segmentation':
         print(f"[ERROR] Model {model_id} is not an instance segmentation model. "
               f"Use run_detection.py or run_inference.py instead.")
         sys.exit(1)
