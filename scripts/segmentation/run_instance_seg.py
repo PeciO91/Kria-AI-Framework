@@ -12,6 +12,21 @@ import traceback
 
 import numpy as np
 import cv2
+# --- GStreamer-safe frame sequence writer wrapper ---
+class _FrameSeqWriter:
+    def __init__(self, filename, fourcc, fps, framesize):
+        self.dir = filename + "_frames"
+        os.makedirs(self.dir, exist_ok=True)
+        self.cnt = 0
+        self._opened = True
+    def isOpened(self): return self._opened
+    def write(self, frame):
+        cv2.imwrite(os.path.join(self.dir, f"frame_{self.cnt:08d}.jpg"), frame,
+                    [cv2.IMWRITE_JPEG_QUALITY, 90])
+        self.cnt += 1
+    def release(self): pass
+cv2.VideoWriter = _FrameSeqWriter
+
 import vart
 
 from model_config import get_active_model
@@ -381,9 +396,9 @@ def consumer_worker(thread_id, input_queue, write_queue, dpu_subgraph,
                         mask = binary_masks[j]
                         overlay[mask] = np.array(color) * alpha + overlay[mask] * (1 - alpha)
                         
-                        cv2.rectangle(orig_img, (x1, y1), (x2, y2), color, 2)
+                        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
                         name = class_names[cid] if class_names and cid < len(class_names) else f"Class {cid}"
-                        cv2.putText(orig_img, f"{name}: {conf:.2f}",
+                        cv2.putText(overlay, f"{name}: {conf:.2f}",
                                     (x1, max(15, y1 - 10)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                     
@@ -450,17 +465,402 @@ def _safe_consumer(worker_args):
                 break
 
 
+def _compute_efficiency(m_cfg, fps_app):
+    gops = m_cfg.get('gops')
+    if not gops or fps_app <= 0:
+        return "N/A"
+    return f"{(float(gops) * fps_app / DPU_PEAK_GOPS) * 100.0:.2f} %"
+
+
+def _validate_worker_counts(thread_override, producers_override, video_path):
+    max_consumers = 4
+    if video_path:
+        if thread_override is not None and thread_override != 1:
+            raise ValueError("Video mode requires --threads 1 to preserve frame order and measure per-frame latency.")
+        if producers_override is not None and producers_override != 1:
+            raise ValueError("Video mode requires --producers 1 to preserve frame order and measure per-frame latency.")
+        return 1, 1
+
+    num_consumers = thread_override if thread_override is not None else ACTIVE_THREADS
+    num_producers = producers_override if producers_override is not None else 4
+    if not 1 <= num_consumers <= max_consumers:
+        raise ValueError(
+            f"--threads must be between 1 and {max_consumers} for the KV260. Got: {num_consumers}.")
+    if num_producers < 1:
+        raise ValueError(f"--producers must be at least 1. Got: {num_producers}.")
+    return num_consumers, num_producers
+
+
+def run_video_instance_seg(model_id, m_cfg, d_cfg, subgraph, dpu_shape, lut,
+                           fix_pos_outs, det_order, mask_order, proto_idx,
+                           video_path, output_video, draw_outputs, save_outputs,
+                           profile_enabled, queue_size):
+    if not os.path.isfile(video_path):
+        print(f"[ERROR] Video file not found: {video_path}")
+        return
+
+    capture = None
+    for backend, name in ((cv2.CAP_FFMPEG, "FFMPEG"),
+                          (cv2.CAP_GSTREAMER, "GStreamer"),
+                          (cv2.CAP_ANY, "ANY")):
+        try:
+            capture = cv2.VideoCapture(video_path, backend)
+        except Exception as e:
+            print(f"[WARN] VideoCapture backend {name} raised: {e}")
+            continue
+        if capture.isOpened():
+            print(f"[INFO] Opened video with backend: {name}")
+            break
+    if capture is None or not capture.isOpened():
+        print(f"[ERROR] Failed to open video: {video_path}")
+        return
+
+    source_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    source_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    source_fps = float(capture.get(cv2.CAP_PROP_FPS))
+    source_frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    if source_width <= 0 or source_height <= 0:
+        capture.release()
+        print(f"[ERROR] Video has invalid dimensions: {source_width}x{source_height}")
+        return
+    if source_fps <= 0 or not np.isfinite(source_fps):
+        source_fps = 30.0
+        print("[WARN] Video FPS metadata is invalid; using 30.0 FPS for output encoding.")
+
+    if save_outputs:
+        if output_video is None:
+            output_video = f"outputs_{model_id}.mp4"
+        if not output_video.lower().endswith(('.mp4', '.avi')):
+            capture.release()
+            print(f"[ERROR] --output-video must use .mp4 or .avi extension: {output_video}")
+            return
+        output_dir = os.path.dirname(output_video)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+        writer = cv2.VideoWriter(
+            output_video, cv2.VideoWriter_fourcc(*'mp4v'), source_fps,
+            (source_width, source_height))
+        if not writer.isOpened():
+            print(f"[WARN] MP4V writer failed; falling back to MJPG/AVI.")
+            base, _ = os.path.splitext(output_video)
+            output_video = f"{base}.avi"
+            writer = cv2.VideoWriter(
+                output_video, cv2.VideoWriter_fourcc(*'MJPG'), source_fps,
+                (source_width, source_height))
+            if not writer.isOpened():
+                capture.release()
+                print(f"[ERROR] Failed to open video writer: {output_video}")
+                return
+    else:
+        writer = None
+        output_video = None
+
+    profiler = StageProfiler(enabled=profile_enabled)
+    stage_start = _profile_start(profiler)
+    runner = vart.Runner.create_runner(subgraph, "run")
+    _profile_end(profiler, "consumer_runner_create", stage_start)
+    stage_start = _profile_start(profiler)
+    output_data = [np.empty(tuple(t.dims), dtype=np.int8)
+                   for t in runner.get_output_tensors()]
+    _profile_end(profiler, "consumer_output_alloc", stage_start)
+    stage_start = _profile_start(profiler)
+    dequant_scales = [np.float32(2 ** -fp) for fp in fix_pos_outs]
+    _profile_end(profiler, "consumer_dequant_setup", stage_start)
+
+    num_classes = m_cfg.get('num_classes', len(d_cfg.get('classes', [])))
+    num_masks = m_cfg.get('num_masks', 32)
+    reg_max = m_cfg.get('reg_max', 1)
+    conf_thresh = m_cfg.get('conf_threshold', 0.25)
+    iou_thresh = m_cfg.get('iou_threshold', 0.45)
+    mask_thresh = m_cfg.get('mask_threshold', 0.5)
+    max_det = m_cfg.get('max_det', 300)
+    class_names = d_cfg.get('classes')
+    cache = UltralyticsDecoderCache(m_cfg['strides'])
+    color_rng = np.random.default_rng(42)
+    class_colors = [tuple(color_rng.integers(0, 255, 3).tolist())
+                    for _ in range(num_classes)]
+
+    print(f"\n[INFO] Starting YOLO Instance Segmentation Video Pipeline")
+    print(f"       Model:    {m_cfg['name']}")
+    print(f"       Dataset:  {d_cfg['name']}")
+    print(f"       Video:    {video_path}")
+    print(f"       Source:   {source_width}x{source_height} @ {source_fps:.3f} FPS")
+    print(f"       Frames:   {source_frame_count if source_frame_count > 0 else 'unknown'}")
+    print(f"       Threads:  1 consumer, 1 producer")
+    print(f"       Queue:    input maxsize {queue_size}")
+    print(f"       Draw:     {'enabled' if draw_outputs else 'disabled'}")
+    print(f"       Save:     {'enabled' if save_outputs else 'disabled'}")
+    print(f"       Output:   {output_video if output_video else 'disabled'}")
+    if profile_enabled:
+        print("       Profile:  enabled")
+
+    monitor = PowerMonitor()
+    monitor.start()
+    idle_power = 0.0
+    frames_processed = 0
+    total_dpu_time = 0.0
+    class_hist = {}
+    start_wall = time.time()
+    end_wall = start_wall
+
+    try:
+        idle_power = float(np.mean([get_power_mw() / 1000.0 for _ in range(5)]))
+        start_wall = time.time()
+        while True:
+            frame_start = time.perf_counter()
+            producer_total_start = _profile_start(profiler)
+            stage_start = _profile_start(profiler)
+            ok, orig_img = capture.read()
+            _profile_end(profiler, "image_read", stage_start)
+            if not ok:
+                break
+
+            orig_shape = orig_img.shape[:2]
+            stage_start = _profile_start(profiler)
+            img_rgb = cv2.cvtColor(orig_img, cv2.COLOR_BGR2RGB)
+            _profile_end(profiler, "bgr_to_rgb", stage_start)
+            stage_start = _profile_start(profiler)
+            img_resized, _, _ = letterbox(
+                img_rgb, new_shape=(dpu_shape[1], dpu_shape[2]))
+            _profile_end(profiler, "letterbox_total", stage_start)
+            stage_start = _profile_start(profiler)
+            img_int8 = np.expand_dims(apply_norm_lut(img_resized, lut), axis=0)
+            _profile_end(profiler, "norm_lut", stage_start)
+            _profile_add(profiler, "expand_dims", 0.0)
+            _profile_end(profiler, "producer_total", producer_total_start)
+            _profile_add(profiler, "latency_preprocess_ready",
+                         time.perf_counter() - frame_start)
+
+            consumer_total_start = _profile_start(profiler)
+            dpu_total_start = _profile_start(profiler)
+            dpu_start = time.perf_counter()
+            stage_start = _profile_start(profiler)
+            job_id = runner.execute_async([img_int8], output_data)
+            _profile_end(profiler, "dpu_submit", stage_start)
+            stage_start = _profile_start(profiler)
+            runner.wait(job_id)
+            _profile_end(profiler, "dpu_wait", stage_start)
+            total_dpu_time += time.perf_counter() - dpu_start
+            _profile_end(profiler, "dpu_api_total", dpu_total_start)
+
+            stage_start = _profile_start(profiler)
+            boxes, scores, class_ids, keep_indices = decode_ultralytics_output(
+                output_data, dequant_scales, conf_thresh, cache, det_order,
+                num_classes, reg_max, profiler, return_keep_index=True)
+            _profile_end(profiler, "decode_total", stage_start)
+
+            result_ready_recorded = False
+            if boxes.shape[0] > 0:
+                stage_start = _profile_start(profiler)
+                if m_cfg.get('decoder') == 'ultralytics_anchor_free':
+                    if scores.shape[0] > max_det:
+                        indices = np.argpartition(-scores, max_det)[:max_det]
+                    else:
+                        indices = np.arange(scores.shape[0])
+                else:
+                    indices = non_max_suppression(
+                        boxes, scores, conf_thresh, iou_thresh, class_ids=class_ids)
+                _profile_end(profiler, "nms_or_topk", stage_start)
+
+                if len(indices) > 0:
+                    final_boxes = boxes[indices]
+                    final_class_ids = class_ids[indices]
+                    final_scores = scores[indices]
+                    final_keep = keep_indices[indices]
+                    for class_id in final_class_ids:
+                        class_id = int(class_id)
+                        class_hist[class_id] = class_hist.get(class_id, 0) + 1
+
+                    stage_start = _profile_start(profiler)
+                    mask_coeffs = np.empty((len(final_keep), num_masks), dtype=np.float32)
+                    for index, (level_idx, flat_idx) in enumerate(final_keep):
+                        mask_idx = mask_order[level_idx]
+                        scale = dequant_scales[mask_idx]
+                        mask_int8 = output_data[mask_idx].reshape(-1, num_masks)[flat_idx]
+                        mask_coeffs[index] = mask_int8.astype(np.float32) * scale
+                    proto = (output_data[proto_idx][0].astype(np.float32) *
+                             dequant_scales[proto_idx]).transpose(2, 0, 1)
+                    xyxy_dpu = final_boxes.copy()
+                    xyxy_dpu[:, 2] = final_boxes[:, 0] + final_boxes[:, 2]
+                    xyxy_dpu[:, 3] = final_boxes[:, 1] + final_boxes[:, 3]
+                    masks = process_mask(
+                        proto, mask_coeffs, xyxy_dpu, dpu_shape[1:3], upsample=False)
+                    _profile_end(profiler, "mask_assembly", stage_start)
+
+                    stage_start = _profile_start(profiler)
+                    xyxy = scale_coords(dpu_shape[1:3], xyxy_dpu.copy(), orig_shape)
+                    _profile_end(profiler, "coord_scale", stage_start)
+                    stage_start = _profile_start(profiler)
+                    binary_masks = scale_image_masks(
+                        masks, xyxy_dpu, dpu_shape[1:3], orig_shape) > mask_thresh
+                    _profile_end(profiler, "mask_scale", stage_start)
+
+                    _profile_add(profiler, "latency_result_ready",
+                                 time.perf_counter() - frame_start)
+                    result_ready_recorded = True
+
+                    if draw_outputs:
+                        stage_start = _profile_start(profiler)
+                        overlay = orig_img.copy()
+                        for index, box in enumerate(xyxy):
+                            x1, y1, x2, y2 = map(int, box[:4])
+                            class_id = int(final_class_ids[index])
+                            confidence = float(final_scores[index])
+                            color = class_colors[class_id]
+                            mask = binary_masks[index]
+                            overlay[mask] = np.array(color) * 0.5 + overlay[mask] * 0.5
+                            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+                            name = (class_names[class_id] if class_names and
+                                    class_id < len(class_names) else f"Class {class_id}")
+                            cv2.putText(overlay, f"{name}: {confidence:.2f}",
+                                        (x1, max(15, y1 - 10)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        cv2.addWeighted(overlay, 1.0, orig_img, 0.0, 0, orig_img)
+                        _profile_end(profiler, "draw_overlays", stage_start)
+
+            if not result_ready_recorded:
+                _profile_add(profiler, "latency_result_ready",
+                             time.perf_counter() - frame_start)
+            if writer is not None:
+                writer_total_start = _profile_start(profiler)
+                stage_start = _profile_start(profiler)
+                writer.write(orig_img)
+                _profile_end(profiler, "image_write", stage_start)
+                _profile_end(profiler, "writer_total", writer_total_start)
+                _profile_add(profiler, "latency_full_output",
+                             time.perf_counter() - frame_start)
+            _profile_end(profiler, "consumer_total", consumer_total_start)
+
+            frames_processed += 1
+            if frames_processed % 10 == 0:
+                total_label = source_frame_count if source_frame_count > 0 else '?'
+                print(f"\r[INFO] Progress: {frames_processed}/{total_label}", end='', flush=True)
+        if frames_processed:
+            print()
+        end_wall = time.time()
+    finally:
+        capture.release()
+        if writer is not None:
+            writer.release()
+        monitor.stop()
+        del runner
+
+    total_wall_time = end_wall - start_wall
+    fps_app = frames_processed / total_wall_time if total_wall_time > 0 else 0.0
+    avg_dpu_latency = total_dpu_time / frames_processed if frames_processed > 0 else 0.0
+    avg_load_power = monitor.average(fallback=idle_power)
+    energy_per_frame = (avg_load_power / fps_app) * 1000.0 if fps_app > 0 else 0.0
+    duty_cycle = (total_dpu_time / total_wall_time) * 100.0 if total_wall_time > 0 else 0.0
+    compute_efficiency = _compute_efficiency(m_cfg, fps_app)
+
+    report = format_report(
+        f"VIDEO SEGMENTATION REPORT: {m_cfg['name'].upper()} | DPU THREADS: 1",
+        [
+            ("Frames Processed:", f"{frames_processed}"),
+            ("Source FPS:", f"{source_fps:.3f}"),
+            ("Application FPS:", f"{fps_app:.2f} img/s"),
+            ("DPU Latency (avg):", f"{avg_dpu_latency * 1000.0:.2f} ms"),
+            ("---", None),
+            ("Power (Load):", f"{avg_load_power:.2f} W"),
+            ("Energy per frame:", f"{energy_per_frame:.2f} mJ/img"),
+            ("---", None),
+            ("DPU Duty Cycle:", f"{min(duty_cycle, 100.0):.2f} %"),
+            ("DPU Compute Eff.:", compute_efficiency),
+            ("---", None),
+            ("Input Video:", video_path),
+            ("Output Video:", output_video if output_video else "disabled"),
+        ],
+    )
+    print("\n" + report)
+    full_report = report
+
+    if class_hist:
+        total_detections = sum(class_hist.values())
+        print(f"\nDETECTION CLASS HISTOGRAM (total {total_detections} detections):")
+        print("-" * 60)
+        for class_id, count in sorted(class_hist.items(), key=lambda item: -item[1])[:20]:
+            name = (class_names[class_id] if class_names and
+                    class_id < len(class_names) else f"Class {class_id}")
+            print(f"    {name:<20s} {count:6d}  ({100 * count / total_detections:.2f}%)")
+        print()
+
+    merged_profiler = None
+    if profile_enabled:
+        merged_profiler = merge_stage_profilers([profiler])
+        profile_report = format_profile_report(
+            "DETAILED PERFORMANCE PROFILE", merged_profiler,
+            total_wall_time, SEGMENTATION_PROFILE_GROUPS)
+        profile_note = (
+            "Memory-transfer note: with the current NumPy-based VART Python API, "
+            "explicit cache/DMA sync time is not separated. Use dpu_submit, "
+            "dpu_wait, and dpu_api_total as the observable VART timing breakdown.\n"
+        )
+        print(profile_report + profile_note)
+        full_report += "\n" + profile_report + profile_note
+
+    result_path = f"results_{model_id}_video.txt"
+    with open(result_path, "w") as result_file:
+        result_file.write(full_report)
+
+    if profile_enabled and merged_profiler is not None:
+        profile_path = f"results_{model_id}_video_profile.json"
+        payload = {
+            "model": model_id,
+            "dataset": d_cfg['name'],
+            "video_path": video_path,
+            "output_video": output_video,
+            "source_fps": source_fps,
+            "source_width": source_width,
+            "source_height": source_height,
+            "source_frame_count": source_frame_count,
+            "threads": 1,
+            "producers": 1,
+            "queue_size": queue_size,
+            "draw_outputs": draw_outputs,
+            "save_outputs": save_outputs,
+            "frames_processed": frames_processed,
+            "wall_time_s": total_wall_time,
+            "fps_app": fps_app,
+            "avg_dpu_latency_ms": avg_dpu_latency * 1000.0,
+            "stages": merged_profiler.summary(total_wall_time),
+            "memory_transfer_note": (
+                "Current NumPy-based VART Python API does not expose separate "
+                "cache/DMA sync timing; dpu_submit/dpu_wait/dpu_api_total are "
+                "the observable VART timing stages."
+            ),
+        }
+        with open(profile_path, "w") as profile_file:
+            json.dump(payload, profile_file, indent=2)
+
+
 # =============================================================
 # MAIN
 # =============================================================
 def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
                      profile_json=False, queue_size=40, draw_outputs=True,
                      save_outputs=True, producers_override=None,
-                     evaluate_accuracy=False, labels_dir=None):
+                     evaluate_accuracy=False, labels_dir=None, video_path=None,
+                     output_video=None):
     m_cfg = get_active_model(model_id)
     d_cfg = get_active_dataset(dataset_id)
     profile_enabled = profile or profile_json
-    queue_size = max(1, int(queue_size))
+    try:
+        queue_size = int(queue_size)
+        if queue_size < 1:
+            raise ValueError(f"--queue-size must be at least 1. Got: {queue_size}.")
+        num_consumers, num_producers = _validate_worker_counts(
+            thread_override, producers_override, video_path)
+    except ValueError as error:
+        print(f"[ERROR] {error}")
+        return
+
+    if output_video and not video_path:
+        print("[ERROR] --output-video requires --video.")
+        return
+
+    if evaluate_accuracy and video_path:
+        print("[ERROR] --accuracy is not supported with --video.")
+        return
 
     if m_cfg.get('type') != 'segmentation' or not m_cfg.get('seg_instance', False):
         print(f"[ERROR] Model {model_id} is not an instance segmentation model. "
@@ -485,9 +885,6 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
         return
 
     lut = build_norm_lut(d_cfg['normalization']['mean'], d_cfg['normalization']['std'], fix_pos_in)
-
-    num_consumers = thread_override if thread_override else ACTIVE_THREADS
-    num_producers = producers_override if producers_override is not None else 4
 
     print(f"\n[INFO] Starting YOLO Instance Segmentation Pipeline")
     print(f"       Model:    {m_cfg['name']}")
@@ -521,6 +918,13 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
           f"reg_max={reg_max}")
     print(f"[DEBUG] det_order={det_order} mask_order={mask_order} "
           f"proto_idx={proto_idx} fix_pos_outs={fix_pos_outs}")
+
+    if video_path:
+        run_video_instance_seg(
+            model_id, m_cfg, d_cfg, subgraph, dpu_shape, lut, fix_pos_outs,
+            det_order, mask_order, proto_idx, video_path, output_video,
+            draw_outputs, save_outputs, profile_enabled, queue_size)
+        return
 
     all_images = [os.path.join(dataset_path, f)
                   for f in os.listdir(dataset_path)
@@ -632,6 +1036,7 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
     avg_load_pwr = monitor.average(fallback=idle_p)
     energy_per_frame = (avg_load_pwr / fps_app) * 1000 if fps_app > 0 else 0.0
     duty_cycle = (total_dpu_time / (total_wall_time * num_consumers)) * 100 if total_wall_time > 0 else 0.0
+    compute_efficiency = _compute_efficiency(m_cfg, fps_app)
 
     report = format_report(
         f"SEGMENTATION REPORT: {m_cfg['name'].upper()} | DPU THREADS: {num_consumers}",
@@ -645,7 +1050,7 @@ def run_instance_seg(model_id, dataset_id, thread_override, profile=False,
             ("Energy per frame:", f"{energy_per_frame:.2f} mJ/img"),
             ("---", None),
             ("DPU Duty Cycle:", f"{min(duty_cycle, 100.0):.2f} %"),
-            ("DPU Compute Eff.:", f"{compute_eff:.2f} %"),
+            ("DPU Compute Eff.:", compute_efficiency),
             ("---", None),
             ("Output Images:", f"./{out_dir}/" if save_outputs else "disabled"),
         ],
@@ -790,6 +1195,10 @@ if __name__ == "__main__":
                         help='Compute mask mAP@0.5 and P/R/F1 using ground truth labels')
     parser.add_argument('--labels-dir', type=str, default=None,
                         help='Override path to GT labels for accuracy evaluation')
+    parser.add_argument('--video', type=str, default=None,
+                        help='Input video path; uses one ordered DPU inference stream')
+    parser.add_argument('--output-video', type=str, default=None,
+                        help='Annotated .mp4 path; defaults to outputs_<model>.mp4')
     args = parser.parse_args()
 
     run_instance_seg(args.model, args.dataset, args.threads,
@@ -799,4 +1208,6 @@ if __name__ == "__main__":
                      save_outputs=not args.no_save,
                      producers_override=args.producers,
                      evaluate_accuracy=args.accuracy,
-                     labels_dir=args.labels_dir)
+                     labels_dir=args.labels_dir,
+                     video_path=args.video,
+                     output_video=args.output_video)

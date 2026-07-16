@@ -102,7 +102,7 @@ MODELS = {
         "conf_threshold": 0.1,
         "iou_threshold": 0.45,
         "decoder": "ultralytics_anchor_free",
-        "num_classes": 80,
+        "num_classes": 8,
         "reg_max": 1,
         "max_det": 300,
         "strides": [8, 16, 32],
@@ -130,7 +130,7 @@ MODELS = {
         # exported mask coefficients + prototypes (see run_instance_seg.py).
         "seg_instance": True,
         "decoder": "ultralytics_anchor_free",
-        "num_classes": 80,
+        "num_classes": 8,
         "reg_max": 1,
         "max_det": 300,
         "strides": [8, 16, 32],
