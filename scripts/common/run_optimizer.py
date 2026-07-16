@@ -525,7 +525,7 @@ def run_optimizer():
     m_cfg = get_active_model(args.model)
     if args.dataset is None:
         if m_cfg.get('seg_instance') or m_cfg.get('type') == 'segmentation':
-            args.dataset = 'coco_instance_seg'
+            args.dataset = 'coco'
     d_cfg = get_active_dataset(args.dataset)
 
     if args.device == 'auto':
@@ -535,7 +535,7 @@ def run_optimizer():
     print(f'[INFO] Using device: {device}')
     print(f'[INFO] Model: {m_cfg["name"]} | method: {args.method} | mode: {args.mode}')
 
-    model = prepare_model(m_cfg, d_cfg, device, prune_threshold=None)
+    model = prepare_model(m_cfg, device, prune_threshold=None)
     input_h, input_w = m_cfg['input_shape']
     dummy_input = torch.randn([1, 3, input_h, input_w], dtype=torch.float32).to(device)
     runner = create_pruning_runner(model, dummy_input, args.method)

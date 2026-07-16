@@ -12,7 +12,6 @@ loading. The returned model is on `device` and in eval mode.
 """
 import os
 import sys
-import importlib.util
 
 import torch
 import torch.nn as nn
@@ -33,49 +32,10 @@ def normalize_path(path):
         return os.path.join(project_root, path)
     return path
 
-
 def add_repo_to_syspath(repo_path):
     if repo_path in sys.path:
         sys.path.remove(repo_path)
     sys.path.insert(0, repo_path)
-
-
-def _ensure_pandas_importable():
-    """Make ``import pandas`` succeed before loading YOLOv5.
-
-    In the Vitis AI PyTorch Docker on WSL2, ``import torch`` can pin an older
-    system libstdc++ that breaks ``import pandas`` with a ``GLIBCXX_3.4.29``
-    error. YOLOv5 imports pandas at module top in several files
-    (``utils/general.py``, ``utils/plots.py``, ``models/common.py``) but only
-    *uses* it inside training / plotting / ``.pandas()`` result paths that the
-    DPU deployment flow never executes. If real pandas fails to import, we
-    inject a minimal stub into ``sys.modules['pandas']`` that satisfies the
-    import-time attribute access (``pd.options.display.max_columns = N``) and
-    leaves runtime ``pd.DataFrame`` / ``pd.read_csv`` calls as no-ops.
-    """
-    try:
-        import pandas  # noqa: F401
-        return
-    except ImportError:
-        pass
-    import types as _types
-
-    stub = _types.ModuleType('pandas')
-
-    class _Display:
-        max_columns = None
-
-    class _Options:
-        display = _Display()
-
-    stub.options = _Options()
-    stub.DataFrame = lambda *a, **kw: None
-    stub.read_csv = lambda *a, **kw: None
-    stub.notna = lambda x: True
-    sys.modules['pandas'] = stub
-    print("[WARN] pandas import failed; injected a stub for YOLOv5 compatibility. "
-          "Training / .pandas() result paths will not work.")
-
 
 def clear_module_tree(root_names):
     for module_name in list(sys.modules):
@@ -117,8 +77,8 @@ def load_model_skeleton(m_cfg):
     Instantiate a model architecture skeleton (no weights) based on the
     configuration in `model_config.py`.
 
-    Supports torchvision models, generic custom Python files, local
-    Ultralytics repositories, and local YOLO repositories.
+    Supports torchvision models, local Ultralytics repositories, and local
+    YOLO repositories.
     """
     source = m_cfg.get('source', 'torchvision')
     loader = m_cfg.get('loader')
@@ -162,24 +122,14 @@ def load_model_skeleton(m_cfg):
             raise FileNotFoundError(f"YAML config not found at: {cfg_path}")
 
         clear_module_tree(('models', 'utils'))
-        _ensure_pandas_importable()
+
         from models.yolo import Model
         return Model(cfg=cfg_path)
 
-    # Generic custom loader (e.g. UNet).
-    model_class = m_cfg['model_class']
-    abs_file_path = normalize_path(m_cfg.get('file_path'))
-    if not abs_file_path or not os.path.exists(abs_file_path):
-        raise FileNotFoundError(f"Custom model file not found at: {abs_file_path}")
-
-    module_name = os.path.basename(abs_file_path).replace(".py", "")
-    spec = importlib.util.spec_from_file_location(module_name, abs_file_path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, model_class)()
+    raise ValueError(f"Unknown loader: {loader}. Use 'ultralytics' or 'yolo'.")
 
 
-def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
+def prepare_model(m_cfg, device, prune_threshold=None):
     """
     Build a deployment-ready model in four stages.
 
@@ -204,11 +154,13 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
         except AttributeError:
             raise AttributeError(f"Model does not have a layer named '{last_layer_name}'.")
 
-        # num_classes priority: model_config > model_config['classes'] > dataset_config['classes']
-        # Use 0 in model_config to explicitly fall back to dataset classes.
+        # num_classes must be set in model_config for classification models.
         num_classes = m_cfg.get('num_classes', 0)
         if num_classes == 0:
-            num_classes = len(m_cfg.get('classes', d_cfg.get('classes', [])))
+            raise ValueError(
+                f"Classification model '{m_cfg['name']}' requires 'num_classes' "
+                f"in model_config.py."
+            )
         print(f"[INFO] Configuring last layer for {num_classes} classes")
         if isinstance(last_layer, nn.Sequential):
             in_features = last_layer[-1].in_features
@@ -266,15 +218,13 @@ def prepare_model(m_cfg, d_cfg, device, prune_threshold=None):
                 f"stale or missing. Re-run the optimizer with --mode all to regenerate."
             )
 
-    # Custom detection graphs may intentionally omit or reshape some checkpoint keys.
-    model.load_state_dict(state_dict, strict=False)
 
     model.to(device)
     model.eval()
     return model
 
 
-def apply_detect_export_patch(model):
+def apply_export_patch(model):
     """Patch an Ultralytics end-to-end ``Detect``/``Segment`` head to export the
     raw one2one convolution tensors instead of running the in-graph DFL decode,
     sigmoid, and top-k post-processing.

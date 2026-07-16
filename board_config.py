@@ -11,8 +11,8 @@ The values below describe the specific KV260 build used in this project:
   - DPU_PEAK_GOPS   : Theoretical peak compute, derived from the DPU PE
                       count, frequency and 2 ops per MAC.
   - ACTIVE_THREADS  : Default number of consumer threads on the board.
-  - BOARD_IP / USER : SCP target for `deploy.py`. Set to None to disable
-                      the automatic transfer step.
+  - BOARD_IP / USER : SCP target for board transfer. Set to None to disable
+                       the automatic transfer step.
 
 `get_power_mw` shells out to `xmutil xlnx_platformstats -p` to read SOM
 total power. Returns 0.0 outside of the Kria environment, which lets the
@@ -43,13 +43,6 @@ DPU_PEAK_GOPS = (4096 * DPU_FREQ_MHZ * 2) / 1000
 ACTIVE_THREADS = 2
 if not (1 <= ACTIVE_THREADS <= 4):
     raise ValueError(f"ACTIVE_THREADS must be between 1 and 4 for KV260. Got: {ACTIVE_THREADS}")
-
-
-# ----- Transfer target -----
-# When BOARD_IP is None and --ip is not passed, deploy.py skips the SCP step.
-BOARD_IP = "147.32.163.22"
-BOARD_USER = "root"
-
 
 def get_power_mw():
     """

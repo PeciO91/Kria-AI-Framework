@@ -18,7 +18,7 @@ Each entry contains:
 """
 
 # Default dataset when no --dataset is passed.
-ACTIVE_DATASET_ID = "coco_detection"
+ACTIVE_DATASET_ID = "coco"
 
 DATASETS = {
     "intel_images": {
@@ -31,7 +31,7 @@ DATASETS = {
             "std": [0.229, 0.224, 0.225]
         }
     },
-    "coco_detection": {
+    "coco": {
         "name": "COCO Detection (YOLO format)",
         "folder_name": "coco2017",
         "images_train": "data/coco2017/train2017",
@@ -41,6 +41,7 @@ DATASETS = {
         "labels_train": "data/coco2017/labels/train2017",
         "labels_val": "data/coco2017/labels/val2017",
         "subset_cache_dir": "data/coco2017/.subsets",
+        "board_labels": "datasets/coco2017/labels/val2017",
         "classes": [
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
             "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
@@ -58,38 +59,6 @@ DATASETS = {
         "normalization": {
             "mean": [0.0, 0.0, 0.0],  # YOLO often uses 0-1 scaling (mean 0, std 1)
             "std": [1.0, 1.0, 1.0]    # check your specific YOLO training config!
-        }
-    },
-    "coco_instance_seg": {
-        "name": "COCO Instance Segmentation (YOLO-seg format)",
-        "folder_name": "coco2017",
-        "images_train": "data/coco2017/train2017",
-        "images_val": "data/coco2017/val2017",
-        # Instance-seg ground truth: one .txt per image, each line is
-        # "class x1 y1 x2 y2 ... xn yn" with normalized polygon coordinates.
-        # Used by the board-side mask mAP evaluation (rasterized to masks).
-        "labels_train": "data/coco2017/labels/train2017",
-        "labels_val": "data/coco2017/labels/val2017",
-        # Where the polygon labels live on the KV260 for --accuracy runs.
-        "board_labels": "datasets/coco2017/labels/val2017",
-        "subset_cache_dir": "data/coco2017/.subsets",
-        "classes": [
-            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
-            "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
-            "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
-            "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-            "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
-            "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
-            "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-            "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-            "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-            "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-            "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
-            "toothbrush"
-        ],
-        "normalization": {
-            "mean": [0.0, 0.0, 0.0],  # YOLO 0-1 scaling (mean 0, std 1)
-            "std": [1.0, 1.0, 1.0]
         }
     }
 }

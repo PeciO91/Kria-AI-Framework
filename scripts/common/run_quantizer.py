@@ -31,8 +31,8 @@ from _bootstrap import PROJECT_ROOT  # noqa: F401
 
 from model_config import get_active_model
 from dataset_config import get_active_dataset
-from model_utils import prepare_model, apply_detect_export_patch
-from dataset_utils import FlatImageDataset, YoloDataset, yolo_collate_fn, build_or_load_subset_indices
+from model_utils import prepare_model, apply_export_patch
+from dataset_utils import YoloDataset, yolo_collate_fn, build_or_load_subset_indices
 from optimizer_utils import evaluate_loss
 from detection_profiles import get_profile
 
@@ -98,14 +98,14 @@ def run_quantization(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
 
-    model = prepare_model(m_cfg, d_cfg, device)
+    model = prepare_model(m_cfg, device)
 
     # Disable Detect head postprocessing to bypass the XIR compiler crash on
     # aten::topk. The patched forward exports the one2one branches (NMS-free)
     # as 6 split tensors that run_detection.py merges, instead of running the
     # in-graph DFL decode + topk. The Inspector stage applies the SAME patch so
     # it reports on exactly the graph we quantize and compile.
-    apply_detect_export_patch(model)
+    apply_export_patch(model)
 
     # Build the calibration loader matching the model's task type.
     curr_batch_size = 1 if args.quant_mode == 'test' else args.batch_size
@@ -133,11 +133,6 @@ def run_quantization(args):
         print("[INFO] Using letterbox YOLO dataset loader for "
               f"{'instance-seg' if m_cfg.get('seg_instance') else 'detection'} "
               "calibration.")
-        yolo_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(d_cfg['normalization']['mean'],
-                                 d_cfg['normalization']['std']),
-        ])
         
         # Load cached or newly built subset indices
         subset_indices = build_or_load_subset_indices(
@@ -154,14 +149,7 @@ def run_quantization(args):
             augment=False,
             indices=subset_indices
         )
-    else:
-        print(f"[INFO] Using flat-folder image loader for {task_type} task.")
-        dataset = FlatImageDataset(root_dir=d_cfg['calib_path'], transform=base_transform)
-        # Random sampling for other task types as well.
-        if len(dataset) > actual_subset_len:
-            random.seed(42)
-            indices = random.sample(range(len(dataset)), actual_subset_len)
-            dataset = Subset(dataset, indices)
+
 
     collate_fn = yolo_collate_fn if (task_type == 'detection' or m_cfg.get('seg_instance')) else None
     loader = torch.utils.data.DataLoader(dataset, batch_size=curr_batch_size, shuffle=False, collate_fn=collate_fn)

@@ -224,7 +224,6 @@ class YoloDataset(torch.utils.data.Dataset):
 
         # 3. Apply augmentations if requested. Masks are transformed in
         # lockstep with the image so mask/box supervision stays aligned.
-        # sem_masks is regenerated from masks further below, so it follows
         # automatically.
         if self.augment and len(boxes) > 0:
             letterboxed, boxes, masks = self._apply_augmentations(letterboxed, boxes, masks)
@@ -240,17 +239,10 @@ class YoloDataset(torch.utils.data.Dataset):
         classes_tensor = torch.tensor(classes, dtype=torch.int64) if len(classes) > 0 else torch.zeros((0,), dtype=torch.int64)
         masks_tensor = torch.tensor(np.array(masks), dtype=torch.float32) if len(masks) > 0 else torch.zeros((0, target_h, target_w), dtype=torch.float32)
 
-        # Generate semantic masks for multi-task segmentation loss
-        sem_mask = np.zeros((target_h, target_w), dtype=np.int64)
-        for i, mask in enumerate(masks):
-            sem_mask[mask > 0] = classes[i]
-        sem_masks_tensor = torch.tensor(sem_mask, dtype=torch.float32)
-
         target = {
             "bboxes": bboxes_tensor,
             "cls": classes_tensor,
             "masks": masks_tensor,
-            "sem_masks": sem_masks_tensor
         }
 
         return img_tensor, target
@@ -292,7 +284,6 @@ def yolo_collate_fn(batch):
     batch_indices = []
 
     batch_masks = []
-    batch_sem_masks = []
 
     for i, (img, target) in enumerate(batch):
         images.append(img)
@@ -303,8 +294,7 @@ def yolo_collate_fn(batch):
             batch_indices.append(torch.full((num_boxes,), i, dtype=torch.float32))
             if 'masks' in target:
                 batch_masks.append(target['masks'])
-        if 'sem_masks' in target:
-            batch_sem_masks.append(target['sem_masks'].unsqueeze(0))
+
 
     images_tensor = torch.stack(images, dim=0)
 
@@ -329,11 +319,6 @@ def yolo_collate_fn(batch):
         H, W = images_tensor.shape[2], images_tensor.shape[3]
         targets_dict["masks"] = torch.zeros((bboxes_tensor.shape[0], H, W), dtype=torch.float32)
 
-    if len(batch_sem_masks) > 0:
-        targets_dict["sem_masks"] = torch.cat(batch_sem_masks, dim=0)
-    else:
-        H, W = images_tensor.shape[2], images_tensor.shape[3]
-        targets_dict["sem_masks"] = torch.zeros((images_tensor.shape[0], H, W), dtype=torch.float32)
 
     return images_tensor, targets_dict
 

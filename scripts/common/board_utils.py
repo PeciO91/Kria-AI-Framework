@@ -2,7 +2,7 @@
 Shared board-side utilities for DPU inference pipelines.
 
 Contains components used by run_inference.py (classification),
-run_detection.py (object detection), and run_segmentation.py:
+run_detection.py (object detection), and run_instance_seg.py (instance segmentation):
 
 - PowerMonitor: background sampler for SOM total power (Watts)
 - ProgressCounter: thread-safe progress counter

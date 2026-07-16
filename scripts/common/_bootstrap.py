@@ -1,7 +1,7 @@
 """
 Shared sys.path bootstrap for all stage scripts.
 
-Every host-side script (deploy / inspector / quantizer / optimizer / compiler)
+Every host-side script (inspector / quantizer / optimizer / compiler)
 and every task-specific runner imports this module at the top so that:
 
   * The project root (where ``model_config.py``, ``dataset_config.py`` and

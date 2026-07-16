@@ -15,8 +15,7 @@ Each entry describes:
   - last_layer_name: Optional, classification only. Override of the final
                      layer attribute name (default 'fc') when adapting class
                      count.
-  - file_path      : Generic custom-source loaders only. Location of the model
-                     definition file.
+  - file_path      : Model definition file for custom-source loaders.
   - repo_path      : Local repository path for repo-backed loaders.
   - yaml_path      : Optional architecture YAML for YOLO-style loaders.
 
@@ -35,6 +34,7 @@ MODELS = {
         "model_path": "models/resnet18.pt", # Path to your PyTorch weights
         "model_class": "resnet18",          # Used to instantiate the model in scripts
         "input_shape": (224, 224),
+        "num_classes": 6,
     },
     "resnet50": {
         "source": "torchvision",
@@ -43,6 +43,7 @@ MODELS = {
         "model_path": "models/resnet50.pt",
         "model_class": "resnet50",
         "input_shape": (224, 224),
+        "num_classes": 6,
     },
     "mobilenet_v2": {
         "source": "torchvision",
@@ -52,6 +53,7 @@ MODELS = {
         "last_layer_name": "classifier",
         "input_shape": (224, 224),
         "model_path": "models/mobilenet_v2.pt",
+        "num_classes": 6,
     },
     "mobilenet_v3": {
         "source": "torchvision",
@@ -60,16 +62,7 @@ MODELS = {
         "model_class": "mobilenet_v3",
         "input_shape": (224, 224),
         "model_path": "models/mobilenet_v3.pt",
-    },
-    "mobilenet_v4_hybrid": {
-        "source": "custom",
-        "file_path": "models/mobilenet_v4_hybrid.py",
-        "type": "classification",
-        "name": "MobileNetV4_Hybrid",
-        "model_class": "MobileNetV4HybridLarge",
-        "last_layer_name": "head", # We will target the 'head' Sequential block
-        "input_shape": (384, 384), # CRITICAL: Must be 384
-        "model_path": "models/mobilenet_v4.pt", # Your weights from Colab
+        "num_classes": 6,
     },
     "yolov5n": {
         "source": "custom",
