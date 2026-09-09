@@ -26,5 +26,6 @@ guides/
 .antigravitycli/
 
 # Dev artifacts
-tests/
+*.bak
+*:Zone.Identifier
 YOLOv26n_Instance_Segmentation_Progress.md

@@ -1,187 +1,171 @@
-# Kria Vitis AI Universal Deployment Pipeline
+# Kria Vitis AI Experimental Deployment Platform
 
-This repository provides a modular pipeline for deploying PyTorch models to the Xilinx Kria KV260 using Vitis AI 3.5. The flow is:
+This repository deploys PyTorch image-classification and YOLOv26 models to the AMD/Xilinx Kria KV260 with Vitis AI 3.5.
 
 ```text
-PyTorch checkpoint
+prepared PyTorch model
   -> Inspector
-  -> optional Optimizer / Pruner
-  -> INT8 Quantizer calibration + export
-  -> Vitis AI Compiler
-  -> optional transfer to KV260
-  -> board-side inference runner
+  -> optional family-specific pruning/fine-tuning
+  -> INT8 calibration and XMODEL export
+  -> Vitis AI compiler
+  -> manual board deployment
+  -> KV260 benchmark
 ```
 
-The project is organized by task while keeping the deployment core shared.
+The code is organized by model family rather than a universal task abstraction.
 
-## Development status
+## Supported scope
 
-| Area | Status | Notes |
+| Family | Models/tasks | Status |
 |---|---|---|
-| Classification | Stable | ResNet18/50, MobileNetV2/V3/V4, InceptionV3. |
-| Detection | Stable | YOLOv5n and YOLOv26s on COCO/KV260. |
-| Segmentation | Stable | UNet_ResNet18 (WIP). YOLOv26n-seg instance segmentation is fully stable with native mask mAP evaluation. |
-| Optimizer / pruning | WIP | Vitis AI structural pruning scripts are present; accuracy recovery loops are still being refined. |
+| Classification | ResNet18/50, MobileNetV2, MobileNetV3-Large | Deployment path migrated; hardware parity validation required |
+| YOLOv26 detection | YOLOv26s, COCO-80, one2one anchor-free output | Deployment path migrated; hardware parity validation required |
+| YOLOv26 instance segmentation | YOLOv26n-Seg, COCO-80, CPU mask assembly | Deployment path migrated; hardware parity validation required |
+| Optimizer/pruning | Family-specific Vitis iterative and one-step flows | Experimental; run only in Vitis AI Docker |
 
-## Project structure
+YOLOv5 and semantic segmentation are not part of the current architecture.
+
+## Architecture
 
 ```text
-Project/
-├── model_config.py                  # Authoritative model registry
-├── dataset_config.py                # Authoritative dataset / normalization registry
-├── board_config.py                  # KV260 board, DPU, transfer, and power metadata
-├── configs/                         # Model-specific architecture configs
-├── data/                            # Datasets and calibration data
-├── models/                          # PyTorch checkpoints and model source trees
-├── build/                           # Generated inspector / quantizer / compiler artifacts
-├── docs/                            # Diagrams and documentation assets
-└── scripts/
-    ├── common/                      # Shared host pipeline + shared board utilities
-    │   ├── deploy.py                # End-to-end orchestrator
-    │   ├── run_inspector.py         # DPU compatibility inspection
-    │   ├── run_quantizer.py         # INT8 calibration/export
-    │   ├── run_optimizer.py         # Structural pruning (WIP)
-    │   ├── run_compiler.py          # Vitis AI compiler wrapper
-    │   ├── model_utils.py           # Task-aware model preparation
-    │   ├── dataset_utils.py         # Shared calibration datasets + letterbox
-    │   ├── optimizer_utils.py       # Pruning/evaluation helpers
-    │   ├── detection_profiles.py    # Detection loss/profile presets used by common stages
-    │   └── board_utils.py           # Shared KV260/VART/preprocessing helpers
-    ├── classification/
-    │   ├── README.md
-    │   └── run_inference.py
+kria_ai/
+├── common/
+│   ├── artifacts.py
+│   ├── checkpoints.py
+│   ├── model_metrics.py
+│   ├── vitis/
+│   │   ├── inspector.py
+│   │   ├── quantizer.py
+│   │   └── compiler.py
+│   └── board/
+│       ├── config.py
+│       ├── runtime.py
+│       ├── input_quantization.py
+│       ├── power.py
+│       └── profiling.py
+├── classification/
+│   ├── config.py
+│   ├── models.py
+│   ├── data.py
+│   ├── preprocess.py
+│   ├── evaluate.py
+│   ├── optimize.py
+│   ├── quantize.py
+│   └── benchmark.py
+└── yolov26/
+    ├── models.py
+    ├── data.py
+    ├── preprocess.py
+    ├── export.py
+    ├── decode.py
+    ├── quantize.py
     ├── detection/
-    │   ├── README.md
-    │   ├── run_detection.py
-    │   └── detection_utils.py
     └── segmentation/
-        ├── README.md
-        ├── run_segmentation.py      # Semantic segmentation runner (UNet, WIP)
-        ├── run_instance_seg.py      # YOLOv26n-seg instance segmentation runner
-        └── seg_utils.py             # Mask assembly + mask mAP helpers
 ```
 
-## Task guides
+`common` never builds torchvision/Ultralytics models, parses labels, creates task losses, letterboxes images, decodes boxes, or assembles masks. Family modules prepare those objects and pass them to the small common Vitis/runtime APIs.
 
-- **Classification**: see [`scripts/classification/README.md`](scripts/classification/README.md)
-- **Object detection**: see [`scripts/detection/README.md`](scripts/detection/README.md)
-- **Semantic segmentation**: see [`scripts/segmentation/README.md`](scripts/segmentation/README.md)
+The root `model_config.py`, `dataset_config.py`, `board_config.py`, and files under `scripts/` are temporary compatibility adapters.
 
-## Core registries
+## Host commands
 
-The three root config files are the source of truth:
+Run commands from the repository root. Inspection, quantization, optimization, and compilation require the Vitis AI 3.5 PyTorch Docker environment.
 
-- **`model_config.py`**: model type, model name, source loader, input shape, checkpoint path, GOPs, and detection decoder metadata.
-- **`dataset_config.py`**: calibration/image paths, folder names, ordered class labels, and normalization values.
-- **`board_config.py`**: KV260 DPU arch path, board IP/user, DPU peak GOPS, active threads, and power telemetry helpers.
-
-Avoid hardcoding model, dataset, or board constants in stage scripts. Add or modify supported assets through these registries.
-
-## Host quickstart
-
-Run from the project root inside the Vitis AI PyTorch Docker environment.
-
-For this Docker environment, preload the conda libstdc++ if modern Python wheels fail after importing `torch`:
+### Classification
 
 ```bash
-export LD_PRELOAD=/opt/vitis_ai/conda/envs/vitis-ai-pytorch/lib/libstdc++.so.6
+python -m kria_ai classification evaluate --model resnet18 --dataset intel_images --subset-len 32
+python -m kria_ai classification inspect --model resnet18
+python -m kria_ai classification quantize --model resnet18 --dataset intel_images --mode calib --subset-len 100
+python -m kria_ai classification quantize --model resnet18 --dataset intel_images --mode test
+python -m kria_ai classification compile --model resnet18
 ```
 
-Classification smoke test:
+### YOLOv26 detection
 
 ```bash
-python scripts/common/deploy.py \
-  --model resnet18 \
-  --dataset intel_images \
-  --subset 32 \
-  --transfer none
+python -m kria_ai yolov26 detection inspect --model yolov26s
+python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --mode calib --subset-len 100
+python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --mode test
+python -m kria_ai yolov26 detection compile --model yolov26s
 ```
 
-Detection smoke test:
+### YOLOv26 instance segmentation
 
 ```bash
-python scripts/common/deploy.py \
-  --model yolov5n \
-  --dataset coco_detection \
-  --subset 32 \
-  --transfer none
+python -m kria_ai yolov26 segmentation inspect --model yolov26n_seg
+python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset coco --mode calib --subset-len 100
+python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset coco --mode test
+python -m kria_ai yolov26 segmentation compile --model yolov26n_seg
 ```
 
-The reorganized layout has been validated with both commands. Expected outputs:
+YOLOv26 model loading validates the checkpoint head against the configured COCO-80 contract. An 8-class checkpoint is rejected rather than decoded with incorrect metadata.
 
-```text
-build/resnet18/compiled/resnet18_kria.xmodel
-build/yolov5n/compiled/yolov5n_kria.xmodel
-```
+AdaQuant is available for classification. YOLOv26 `--fast-ft` is intentionally disabled until a callback is validated against the patched raw-output graph.
 
-## Full deployment to KV260
+## Optimizer
 
-Use the same orchestrator without `--transfer none`:
+Optimization is family-owned and emits an explicit checkpoint plus manifest under `build/<model-id>/optimizer_report/`.
 
 ```bash
-python scripts/common/deploy.py \
-  --model resnet18 \
-  --dataset intel_images \
-  --subset 100 \
-  --transfer scp
+python -m kria_ai classification optimize --model resnet18 --dataset intel_images --method iterative --mode all --ratio 0.2
+python -m kria_ai yolov26 detection optimize --model yolov26s --dataset coco --method one_step --mode all --ratio 0.2
+python -m kria_ai yolov26 segmentation optimize --model yolov26n_seg --dataset coco --method one_step --mode all --ratio 0.2
 ```
 
-`--transfer` accepts `scp` (default), `rsync` (faster re-deploys), `local` (copy to `--local_dest`, e.g. an SD-card mount), or `none` (skip). Board IP/user default to `BOARD_IP`/`BOARD_USER` from `board_config.py` and can be overridden with `--ip`/`--user`.
-
-`deploy.py` transfers only the files needed by the active task:
-
-- **Classification**: `run_inference.py` + shared configs/helpers.
-- **Detection**: `run_detection.py`, `detection_utils.py` + shared configs/helpers.
-- **Semantic segmentation**: `run_segmentation.py` + shared configs/helpers.
-- **Instance segmentation** (`seg_instance` models like `yolov26n_seg`): `run_instance_seg.py`, `seg_utils.py`, `detection_utils.py` + shared configs/helpers.
-
-On the board, run the task-specific runner from `/home/root/` (or the configured board user home):
+Pass the result explicitly to a later stage:
 
 ```bash
-python3 run_inference.py --model resnet18 --dataset intel_images --threads 2
-python3 run_detection.py --model yolov5n --dataset coco_detection --threads 2
-python3 run_segmentation.py --model unet_res18 --dataset cityscapes_seg --threads 2
-python3 run_instance_seg.py --model yolov26n_seg --dataset coco_instance_seg --threads 2
+python -m kria_ai classification quantize --model resnet18 --dataset intel_images --checkpoint build/resnet18/optimizer_report/resnet18_optimized.pt --mode calib
 ```
 
-## Supported datasets
-
-| Dataset ID | Task | Main paths |
-|---|---|---|
-| `intel_images` | Classification | `data/intel_images/calibration_data` |
-| `intel_images_inception` | Classification | `data/intel_images/calibration_data` |
-| `coco_detection` | Detection | `data/coco2017/train2017`, `data/coco2017/val2017` |
-| `coco_instance_seg` | Instance segmentation | `data/coco2017/train2017`, `data/coco2017/val2017` (YOLO-seg polygon labels) |
-| `cityscapes_seg` | Semantic segmentation | `data/cityscapes/calibration_data` |
-
-COCO detection calibration uses images from `data/coco2017`. YOLO-format labels are optional for pure quantizer calibration but required for training or mAP evaluation.
-
-## Detection notes
-
-- **YOLOv5n** keeps raw P3/P4/P5 DPU outputs and performs anchor decode + NMS on the ARM CPU.
-- **YOLOv26s** uses a DPU-friendly Ultralytics wrapper, one2one branch, anchor-free decode, and top-k selection without NMS.
-- Board profiling flags include `--profile`, `--profile-json`, `--queue-size`, `--producers`, `--no-draw`, and `--no-save`.
-
-See [`scripts/detection/README.md`](scripts/detection/README.md) for details.
-
-## Instance Segmentation notes
-
-- **YOLOv26n-seg** is fully stable. It reuses the detection pipeline's anchor-free decoder but adds a highly-optimized mask assembly phase on the ARM CPU, achieving ~38 FPS on the KV260.
-- **Training Requirement**: The model must be trained using a DPU-friendly YAML (e.g. `configs/yolo26-seg_dpu.yaml`) which replaces C2PSA/Attention layers with standard convolutions and ensures DPU-compatible activations (ReLU).
-- **mAP Evaluation Requirement**: To run on-board mask mAP@0.5 evaluation (via the `--accuracy` flag), COCO YOLO-seg format polygon labels must be accessible on the board and specified via `--labels-dir` (or configured in `dataset_config.py`).
+Sparse optimizer checkpoints are rejected by quantization; use the materialized slim checkpoint.
 
 ## Generated artifacts
 
-Generated artifacts live under `build/<model-name>/`:
+Canonical artifacts use model IDs:
 
 ```text
-build/<model>/inspector_report/
-build/<model>/quantize_result/
-build/<model>/compiled/
+build/<model-id>/inspector_report/
+build/<model-id>/optimizer_report/
+build/<model-id>/quantize_result/<model-id>_int.xmodel
+build/<model-id>/compiled/<model-id>_kria.xmodel
 ```
 
-Do not hand-edit generated quantizer, compiler, `.xmodel`, weight, dataset, or calibration artifacts unless intentionally debugging the generated output.
+Do not hand-edit generated artifacts, checkpoints, datasets, or XMODEL files.
 
-## Documentation
+## KV260 benchmark
 
-Additional diagrams live under `docs/`.
+Transfer automation is intentionally deferred. Manually copy the `kria_ai` package, required XMODEL, and dataset to the board, then run:
+
+```bash
+python3 -m kria_ai classification benchmark --model resnet18 --dataset intel_images --xmodel resnet18_kria.xmodel --threads 2
+python3 -m kria_ai yolov26 detection benchmark --model yolov26s --dataset coco --xmodel yolov26s_kria.xmodel --threads 2 --profile
+python3 -m kria_ai yolov26 segmentation benchmark --model yolov26n_seg --dataset coco --xmodel yolov26n_seg_kria.xmodel --threads 2 --profile
+```
+
+Segmentation supports `--accuracy --labels-dir ...` for the current mask mAP@0.5 metric and `--video ... --threads 1 --producers 1` for ordered file-video inference.
+
+Board code imports XIR/VART lazily, validates the KV260 1-4 runner limit, and reports unavailable power/compute metrics without crashing.
+
+## Configuration
+
+- `kria_ai/classification/config.py`: classification models and datasets.
+- `kria_ai/yolov26/detection/config.py`: YOLOv26 detection assets and thresholds.
+- `kria_ai/yolov26/segmentation/config.py`: YOLOv26 segmentation assets and mask metadata.
+- `kria_ai/common/board/config.py`: KV260/DPU metadata.
+- `configs/yolov26/`: DPU-friendly Ultralytics architectures.
+
+Static registries use frozen Python dataclasses. Architecture YAML remains limited to Ultralytics model construction.
+
+## Validation
+
+Dependency-light checks:
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q kria_ai tests
+python -m kria_ai --help
+```
+
+Full behavior validation requires the Vitis AI Docker environment and KV260. Long pruning, compilation, transfer, and hardware commands should be run explicitly, not as part of a normal unit-test pass.

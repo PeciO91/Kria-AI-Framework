@@ -1,73 +1,51 @@
-"""
-Central registry of dataset definitions used by both the host-side
-calibration loaders and the board-side accuracy / labeling logic.
+from kria_ai.classification.config import DATASETS as CLASSIFICATION_DATASETS
+from kria_ai.yolov26.detection.config import DATASETS as DETECTION_DATASETS
+from kria_ai.yolov26.segmentation.config import DATASETS as SEGMENTATION_DATASETS
 
-Each entry contains:
 
-  - name          : Human-readable description used in the analytical report.
-  - folder_name   : Subdirectory under datasets/ on the board (or under
-                    data/ on the host) where the images live.
-  - calib_path    : Host-side path to the calibration set used by the
-                    quantizer.
-  - classes       : Ordered list of class names. Index = class id.
-                    Classification: defines train_data/<class>/ structure
-                    that run_inference.py walks. Detection: maps decoded
-                    class ids to human-readable labels for drawn output.
-  - normalization : Mean / std used for INT8 input normalization. YOLO
-                    models trained on 0..1 inputs use mean=0, std=1.
-"""
+ACTIVE_DATASET_ID = "intel_images"
 
-# Default dataset when no --dataset is passed.
-ACTIVE_DATASET_ID = "coco"
+
+def _classification(config):
+    return {
+        "name": config.name,
+        "folder_name": config.board_root.parent.name,
+        "calib_path": str(config.calibration_root),
+        "classes": list(config.classes),
+        "normalization": {"mean": list(config.mean), "std": list(config.std)},
+    }
+
+
+def _yolo(config):
+    values = {
+        "name": config.name,
+        "folder_name": config.board_images.name,
+        "images_train": str(config.train_images),
+        "images_val": str(config.validation_images),
+        "labels_train": str(config.train_labels),
+        "labels_val": str(config.validation_labels),
+        "subset_cache_dir": str(config.subset_cache_dir),
+        "classes": list(config.classes),
+        "normalization": {"mean": list(config.mean), "std": list(config.std)},
+    }
+    if hasattr(config, "board_labels"):
+        values["board_labels"] = str(config.board_labels)
+    return values
+
 
 DATASETS = {
-    "intel_images": {
-        "name": "Intel Image Classification",
-        "folder_name": "intel_images",  # Used for standardized path generation
-        "classes": ["buildings", "forest", "glacier", "mountain", "sea", "street"],
-        "calib_path": "data/intel_images/calibration_data",  # Path for calibration images
-        "normalization": {
-            "mean": [0.485, 0.456, 0.406],
-            "std": [0.229, 0.224, 0.225]
-        }
-    },
-    "coco": {
-        "name": "COCO Detection (YOLO format)",
-        "folder_name": "coco2017",
-        "images_train": "data/coco2017/train2017",
-        "images_val": "data/coco2017/val2017",
-        # YOLO-format labels (one .txt per image). If absent, calibration still
-        # works (forward-pass only); training / mAP eval would need them.
-        "labels_train": "data/coco2017/labels/train2017",
-        "labels_val": "data/coco2017/labels/val2017",
-        "subset_cache_dir": "data/coco2017/.subsets",
-        "board_labels": "datasets/coco2017/labels/val2017",
-        "classes": [
-            "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
-            "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
-            "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
-            "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-            "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
-            "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
-            "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-            "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-            "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-            "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-            "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
-            "toothbrush"
-        ],
-        "normalization": {
-            "mean": [0.0, 0.0, 0.0],  # YOLO often uses 0-1 scaling (mean 0, std 1)
-            "std": [1.0, 1.0, 1.0]    # check your specific YOLO training config!
-        }
-    }
+    **{dataset_id: _classification(config) for dataset_id, config in CLASSIFICATION_DATASETS.items()},
+    **{dataset_id: _yolo(config) for dataset_id, config in DETECTION_DATASETS.items()},
 }
+for dataset_id, config in SEGMENTATION_DATASETS.items():
+    DATASETS.setdefault(dataset_id, _yolo(config)).update(
+        {"board_labels": str(config.board_labels)}
+    )
 
 
 def get_active_dataset(dataset_id=None):
-    """Return the configuration dict for `dataset_id`, falling back to ACTIVE_DATASET_ID."""
-    target_id = dataset_id if dataset_id else ACTIVE_DATASET_ID
-    if target_id not in DATASETS:
-        available = ", ".join(DATASETS.keys())
-        raise ValueError(f"Dataset ID '{target_id}' not found. Available: {available}")
-    return DATASETS[target_id]
+    resolved_id = dataset_id or ACTIVE_DATASET_ID
+    try:
+        return DATASETS[resolved_id]
+    except KeyError as error:
+        raise ValueError(f"Unknown dataset {resolved_id!r}; available: {', '.join(DATASETS)}") from error

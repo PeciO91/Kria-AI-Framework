@@ -1,167 +1,66 @@
-"""
-Central registry of model definitions consumed by every stage of the
-pipeline (inspector, quantizer, compiler, board runners).
+from kria_ai.classification.config import MODELS as CLASSIFICATION_MODELS
+from kria_ai.yolov26.detection.config import MODELS as DETECTION_MODELS
+from kria_ai.yolov26.segmentation.config import MODELS as SEGMENTATION_MODELS
 
-Each entry describes:
 
-  - source         : 'torchvision' or 'custom' (loader strategy in model_utils).
-  - loader         : Optional custom loader name ('yolo' or 'ultralytics').
-  - type           : 'classification', 'detection', or 'segmentation'.
-  - name           : Human-readable name; used to derive the build directory
-                     and the compiled xmodel filename.
-  - model_class    : Class or factory name to instantiate.
-  - model_path     : Path to .pt weights, relative to the project root.
-  - input_shape    : (H, W) input resolution.
-  - last_layer_name: Optional, classification only. Override of the final
-                     layer attribute name (default 'fc') when adapting class
-                     count.
-  - file_path      : Model definition file for custom-source loaders.
-  - repo_path      : Local repository path for repo-backed loaders.
-  - yaml_path      : Optional architecture YAML for YOLO-style loaders.
-
-Detection models additionally carry conf_threshold, iou_threshold, anchors
-and strides used by the on-board YOLO decoder.
-"""
-
-# Default model when no --model is passed.
 ACTIVE_MODEL_ID = "resnet18"
 
-MODELS = {
-    "resnet18": {
+
+def _classification(config):
+    return {
         "source": "torchvision",
         "type": "classification",
-        "name": "ResNet18",
-        "model_path": "models/resnet18.pt", # Path to your PyTorch weights
-        "model_class": "resnet18",          # Used to instantiate the model in scripts
-        "input_shape": (224, 224),
-        "num_classes": 6,
-    },
-    "resnet50": {
-        "source": "torchvision",
-        "type": "classification",
-        "name": "ResNet50",
-        "model_path": "models/resnet50.pt",
-        "model_class": "resnet50",
-        "input_shape": (224, 224),
-        "num_classes": 6,
-    },
-    "mobilenet_v2": {
-        "source": "torchvision",
-        "type": "classification",
-        "name": "MobileNetV2",
-        "model_class": "mobilenet_v2",
-        "last_layer_name": "classifier",
-        "input_shape": (224, 224),
-        "model_path": "models/mobilenet_v2.pt",
-        "num_classes": 6,
-    },
-    "mobilenet_v3": {
-        "source": "torchvision",
-        "type": "classification",
-        "name": "MobileNetV3-Large",
-        "model_class": "mobilenet_v3",
-        "input_shape": (224, 224),
-        "model_path": "models/mobilenet_v3.pt",
-        "num_classes": 6,
-    },
-    "yolov5n": {
-        "source": "custom",
-        "loader": "yolo",
-        "type": "detection",
-        "name": "YOLOv5n",
-        "input_shape": (640, 640),
-        "model_path": "models/yolov5n/yolov5n.pt",     # YOLOv5n weights
-        "repo_path": "models/yolov5n",
-        "yaml_path": "models/yolov5n/models/yolov5n.yaml",  # Architecture config
-        "conf_threshold": 0.25,
-        "iou_threshold": 0.45,
-        # YOLOv5 anchors per detection level (P3, P4, P5)
-        "anchors": [
-            [[10, 13], [16, 30], [33, 23]],
-            [[30, 61], [62, 45], [59, 119]],
-            [[116, 90], [156, 198], [373, 326]]
-        ],
-        "strides": [8, 16, 32]
-    },
-    "yolov26s": {
+        "name": config.name,
+        "model_path": str(config.checkpoint_path),
+        "model_class": config.constructor,
+        "input_shape": config.input_size,
+        "num_classes": config.num_classes,
+        "last_layer_name": config.head_attribute,
+    }
+
+
+def _detection(config):
+    return {
         "source": "custom",
         "loader": "ultralytics",
         "type": "detection",
-        "name": "YOLOv26s",
-        "input_shape": (640, 640),
-        "model_path": "models/yolo26s.pt",
-        "repo_path": "models/ultralytics-main",
-        "yaml_path": "configs/yolov26s_dpu.yaml",
-        "conf_threshold": 0.1,
-        "iou_threshold": 0.45,
+        "name": config.name,
+        "model_path": str(config.checkpoint_path),
+        "repo_path": str(config.repository_path),
+        "yaml_path": str(config.architecture_path),
+        "input_shape": config.input_size,
+        "num_classes": config.num_classes,
+        "reg_max": config.reg_max,
+        "max_det": config.max_detections,
+        "strides": list(config.strides),
+        "conf_threshold": config.confidence_threshold,
         "decoder": "ultralytics_anchor_free",
-        "num_classes": 8,
-        "reg_max": 1,
-        "max_det": 300,
-        "strides": [8, 16, 32],
-        # Output convs of the Detect head must keep their channel counts during
-        # pruning. Detect is the last layer in configs/yolov26s_dpu.yaml
-        # (layers 0-21 + Detect), so it lives at model.model[22].
-        "prune_excludes": [
-            "model.22.cv2.*.2",
-            "model.22.cv3.*.2",
-            "model.22.one2one_cv2.*.2",
-            "model.22.one2one_cv3.*.2"
-        ]
-    },
-    "yolov26n_seg": {
-        "source": "custom",
-        "loader": "ultralytics",
+        "prune_excludes": list(config.prune_excludes),
+    }
+
+
+def _segmentation(config):
+    values = _detection(config)
+    values.update({
         "type": "segmentation",
-        "name": "YOLOv26n-Seg",
-        "input_shape": (640, 640),
-        "model_path": "models/yolov26n-seg.pt",
-        "repo_path": "models/ultralytics-main",
-        "yaml_path": "configs/yolov26n-seg_dpu.yaml",
-        # Instance-segmentation: reuse the anchor-free detection decoder for
-        # boxes/classes, then assemble per-object masks on the ARM CPU from the
-        # exported mask coefficients + prototypes (see run_instance_seg.py).
-        "decoder": "ultralytics_anchor_free",
-        "num_classes": 8,
-        "reg_max": 1,
-        "max_det": 300,
-        "strides": [8, 16, 32],
-        # Mask head: 32 coefficients per anchor decoded against 256-channel
-        # prototypes (Segment26 / Proto26). mask_threshold binarizes the final
-        # per-instance mask after sigmoid.
-        "num_masks": 32,
-        "conf_threshold": 0.4,
-        "iou_threshold": 0.45,
-        "mask_threshold": 0.5,
-        # Output convs of the Segment26 head must keep their channel counts
-        # during pruning. Segment26 is the last layer in
-        # configs/yolo26-seg_dpu.yaml (layers 0-21 + Segment26), so it lives at
-        # model.model[22]. Protect box (cv2), class (cv3) and mask (cv4) convs
-        # of both the one2many and one2one branches.
-        "prune_excludes": [
-            "model.22.cv2.*.2",
-            "model.22.cv3.*.2",
-            "model.22.cv4.*.2",
-            "model.22.one2one_cv2.*.2",
-            "model.22.one2one_cv3.*.2",
-            "model.22.one2one_cv4.*.2",
-            "model.22.proto.*",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[6]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.117",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[8]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.173",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[12]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.241",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[15]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.297",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[18]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.355",
-            "SegmentationModel::SegmentationModel/C3k2[model]/C3k2[21]/C3k[m]/ModuleList[0]/Conv[cv3]/Conv2d[conv]/ret.413"
-        ]
+        "num_masks": config.num_masks,
+        "num_protos": config.num_masks,
+        "prototype_channels": config.prototype_channels,
+        "mask_threshold": config.mask_threshold,
+    })
+    return values
 
 
-    },
+MODELS = {
+    **{model_id: _classification(config) for model_id, config in CLASSIFICATION_MODELS.items()},
+    **{model_id: _detection(config) for model_id, config in DETECTION_MODELS.items()},
+    **{model_id: _segmentation(config) for model_id, config in SEGMENTATION_MODELS.items()},
 }
 
+
 def get_active_model(model_id=None):
-    """Return the configuration dict for `model_id`, falling back to ACTIVE_MODEL_ID."""
-    target_id = model_id if model_id else ACTIVE_MODEL_ID
-    if target_id not in MODELS:
-        available = ", ".join(MODELS.keys())
-        raise ValueError(f"Model ID '{target_id}' not found. Available: {available}")
-    return MODELS[target_id]
+    resolved_id = model_id or ACTIVE_MODEL_ID
+    try:
+        return MODELS[resolved_id]
+    except KeyError as error:
+        raise ValueError(f"Unknown model {resolved_id!r}; available: {', '.join(MODELS)}") from error
