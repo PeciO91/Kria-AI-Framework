@@ -116,7 +116,7 @@ python -m kria_ai yolov26 segmentation optimize --model yolov26n_seg --dataset c
 Pass the result explicitly to a later stage:
 
 ```bash
-python -m kria_ai classification quantize --model resnet18 --dataset intel_images --checkpoint build/resnet18/optimizer_report/resnet18_optimized.pt --mode calib
+python -m kria_ai classification quantize --model resnet18 --dataset intel_images --checkpoint build/resnet18/optimizer_report/resnet18_one_step_r0.2_optimized.pt --mode calib
 ```
 
 Sparse optimizer checkpoints are rejected by quantization; use the materialized slim checkpoint.
@@ -139,7 +139,7 @@ Do not hand-edit generated artifacts, checkpoints, datasets, or XMODEL files.
 Transfer automation is intentionally deferred. Manually copy the `kria_ai` package, required XMODEL, and dataset to the board, then run:
 
 ```bash
-python3 -m kria_ai classification benchmark --model resnet18 --dataset intel_images --xmodel resnet18_kria.xmodel --threads 2
+python3 -m kria_ai classification benchmark --model resnet18 --dataset intel_images --xmodel resnet18_kria.xmodel --threads 2 --profile
 python3 -m kria_ai yolov26 detection benchmark --model yolov26s --dataset coco --xmodel yolov26s_kria.xmodel --threads 2 --profile
 python3 -m kria_ai yolov26 segmentation benchmark --model yolov26n_seg --dataset coco --xmodel yolov26n_seg_kria.xmodel --threads 2 --profile
 ```

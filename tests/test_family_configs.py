@@ -27,6 +27,8 @@ class TestFamilyConfigs(unittest.TestCase):
         self.assertEqual(KV260.validate_runner_count(1), 1)
         self.assertEqual(KV260.validate_runner_count(4), 4)
         with self.assertRaises(ValueError):
+            KV260.validate_runner_count(0)
+        with self.assertRaises(ValueError):
             KV260.validate_runner_count(5)
 
 

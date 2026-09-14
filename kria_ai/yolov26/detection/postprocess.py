@@ -160,8 +160,10 @@ def scale_to_original(
             input_width / original_width,
         )
         gain_x = gain_y = gain
-        pad_x = (input_width - original_width * gain) / 2.0
-        pad_y = (input_height - original_height * gain) / 2.0
+        resized_width = int(round(original_width * gain))
+        resized_height = int(round(original_height * gain))
+        pad_x = int(round((input_width - resized_width) / 2.0 - 0.1))
+        pad_y = int(round((input_height - resized_height) / 2.0 - 0.1))
     else:
         try:
             gains, padding = ratio_pad

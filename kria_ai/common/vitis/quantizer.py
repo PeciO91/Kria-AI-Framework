@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,7 @@ class QuantizationResult:
     processed_samples: int
     quant_config_path: Path | None
     xmodel_path: Path | None
+    manifest_path: Path
 
 
 def _resolve_exported_xmodel(output_dir, model, requested_filename, previous_timestamp=None):
@@ -105,10 +107,29 @@ def run_quantization(
             previous_timestamp=previous_timestamp,
         )
 
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "stage": "quantization",
+                "mode": mode,
+                "processed_samples": processed_samples,
+                "target": target,
+                "quant_config": str(quant_config_path) if quant_config_path else None,
+                "xmodel": str(xmodel_path) if xmodel_path else None,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     return QuantizationResult(
         quant_model=quant_model,
         output_dir=output_dir,
         processed_samples=processed_samples,
         quant_config_path=quant_config_path,
         xmodel_path=xmodel_path,
+        manifest_path=manifest_path,
     )

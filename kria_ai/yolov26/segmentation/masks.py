@@ -155,19 +155,13 @@ def scale_image_masks(masks, bboxes, img1_shape, img0_shape):
     source_x_scale = source_width / img1_shape[1]
     source_y_scale = source_height / img1_shape[0]
 
-    gain = min(
-        img1_shape[0] / img0_shape[0],
-        img1_shape[1] / img0_shape[1],
-    )
-    pad_width = (img1_shape[1] - img0_shape[1] * gain) / 2
-    pad_height = (img1_shape[0] - img0_shape[0] * gain) / 2
-
-    top = int(round(pad_height - 0.1))
-    left = int(round(pad_width - 0.1))
-    bottom = int(round(img1_shape[0] - pad_height + 0.1))
-    right = int(round(img1_shape[1] - pad_width + 0.1))
-    crop_height = bottom - top
-    crop_width = right - left
+    gain = min(img1_shape[0] / img0_shape[0], img1_shape[1] / img0_shape[1])
+    resized_width = int(round(img0_shape[1] * gain))
+    resized_height = int(round(img0_shape[0] * gain))
+    left = int(round((img1_shape[1] - resized_width) / 2.0 - 0.1))
+    top = int(round((img1_shape[0] - resized_height) / 2.0 - 0.1))
+    crop_width = resized_width
+    crop_height = resized_height
 
     scale_y = crop_height / img0_shape[0]
     scale_x = crop_width / img0_shape[1]
@@ -180,10 +174,10 @@ def scale_image_masks(masks, bboxes, img1_shape, img0_shape):
 
     for index in range(count):
         x1, y1, x2, y2 = bboxes[index]
-        destination_x1 = (x1 - pad_width) / gain - margin
-        destination_y1 = (y1 - pad_height) / gain - margin
-        destination_x2 = (x2 - pad_width) / gain + margin
-        destination_y2 = (y2 - pad_height) / gain + margin
+        destination_x1 = (x1 - left) / gain - margin
+        destination_y1 = (y1 - top) / gain - margin
+        destination_x2 = (x2 - left) / gain + margin
+        destination_y2 = (y2 - top) / gain + margin
 
         output_x1 = max(0, int(np.floor(destination_x1)))
         output_y1 = max(0, int(np.floor(destination_y1)))

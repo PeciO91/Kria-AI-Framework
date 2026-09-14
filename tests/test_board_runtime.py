@@ -142,6 +142,43 @@ class TestBoardRuntime(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_normalization_lut(image_4ch, lut)
 
+    def test_apply_normalization_lut_cv2_color_path(self):
+        import types
+
+        import kria_ai.common.board.input_quantization as input_quantization
+
+        mean = (0.485, 0.456, 0.406)
+        std = (0.229, 0.224, 0.225)
+        lut = build_normalization_lut(mean, std, 7)  # (256, 3)
+        image = np.array([[[10, 128, 255]]], dtype=np.uint8)
+
+        def fake_lut(source, table):
+            self.assertEqual(table.shape, (256, 1, 3))
+            output = np.empty(source.shape, dtype=np.int8)
+            for channel in range(source.shape[-1]):
+                output[..., channel] = table[source[..., channel], 0, channel]
+            return output
+
+        fake_cv2 = types.ModuleType("cv2")
+        fake_cv2.LUT = fake_lut
+        previous_cv2 = sys.modules.get("cv2")
+        previous_flag = input_quantization._CV2_SIGNED_LUT_AVAILABLE
+        sys.modules["cv2"] = fake_cv2
+        input_quantization._CV2_SIGNED_LUT_AVAILABLE = None
+        try:
+            quantized = apply_normalization_lut(image, lut)
+        finally:
+            input_quantization._CV2_SIGNED_LUT_AVAILABLE = previous_flag
+            if previous_cv2 is None:
+                sys.modules.pop("cv2", None)
+            else:
+                sys.modules["cv2"] = previous_cv2
+
+        self.assertEqual(quantized.shape, image.shape)
+        self.assertEqual(quantized.dtype, np.int8)
+        for channel in range(3):
+            self.assertEqual(quantized[0, 0, channel], lut[image[0, 0, channel], channel])
+
 
 if __name__ == "__main__":
     unittest.main()

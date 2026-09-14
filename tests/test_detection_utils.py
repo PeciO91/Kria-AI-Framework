@@ -6,7 +6,11 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 try:
     import numpy as np
-    from kria_ai.yolov26.decode import UltralyticsDecoderCache, decode_ultralytics_output
+    from kria_ai.yolov26.decode import (
+        UltralyticsDecoderCache,
+        decode_ultralytics_output,
+        validate_detection_output_contract,
+    )
     NUMPY_AVAILABLE = True
 except ImportError:
     NUMPY_AVAILABLE = False
@@ -63,6 +67,37 @@ class TestDetectionUtils(unittest.TestCase):
         # Level 0, 10*20 + 10 = 210
         self.assertEqual(keep_indices[0][0], 0)
         self.assertEqual(keep_indices[0][1], 210)
+
+    def test_validate_detection_output_contract_accepts_canonical(self):
+        # Canonical NHWC 640x640 outputs: box/class per strides 8, 16, 32.
+        dims = [
+            (1, 80, 80, 4),
+            (1, 80, 80, 80),
+            (1, 40, 40, 4),
+            (1, 40, 40, 80),
+            (1, 20, 20, 4),
+            (1, 20, 20, 80),
+        ]
+        order = validate_detection_output_contract(
+            dims, num_classes=80, reg_max=1, num_levels=3
+        )
+        self.assertEqual(order, [0, 1, 2, 3, 4, 5])
+
+    def test_validate_detection_output_contract_rejects_missing_box(self):
+        # Replacing the P3 box tensor with a second P3 class tensor keeps the
+        # count at six but must still fail per-level role validation.
+        dims = [
+            (1, 80, 80, 80),
+            (1, 80, 80, 80),
+            (1, 40, 40, 4),
+            (1, 40, 40, 80),
+            (1, 20, 20, 4),
+            (1, 20, 20, 80),
+        ]
+        with self.assertRaises(ValueError):
+            validate_detection_output_contract(
+                dims, num_classes=80, reg_max=1, num_levels=3
+            )
 
 
 if __name__ == "__main__":

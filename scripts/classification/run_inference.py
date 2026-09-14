@@ -16,6 +16,8 @@ def main(argv=None):
     parser.add_argument("--queue-size", type=int, default=80)
     parser.add_argument("--xmodel")
     parser.add_argument("--dataset-root")
+    parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--profile-json", action="store_true")
     args = parser.parse_args(argv)
     command = [
         "--model", args.model,
@@ -29,6 +31,10 @@ def main(argv=None):
         command.extend(["--xmodel", args.xmodel])
     if args.dataset_root:
         command.extend(["--dataset-root", args.dataset_root])
+    if args.profile:
+        command.append("--profile")
+    if args.profile_json:
+        command.append("--profile-json")
     print("[DEPRECATED] Use: python -m kria_ai classification benchmark " + " ".join(command))
     return run_benchmark(command)
 

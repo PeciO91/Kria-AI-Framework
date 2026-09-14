@@ -8,6 +8,7 @@ try:
     import numpy as np
     import cv2
     from kria_ai.yolov26.preprocess import letterbox
+    from kria_ai.yolov26.detection.postprocess import scale_to_original
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
@@ -81,6 +82,36 @@ class TestYOLOPreprocessing(unittest.TestCase):
         self.assertAlmostEqual(pad_w, 0.0)
         self.assertAlmostEqual(pad_h, 0.0)
         np.testing.assert_array_equal(result, image)
+
+    @unittest.skipUnless(CV2_AVAILABLE, "NumPy and OpenCV are required")
+    def test_letterbox_odd_padding(self):
+        # 401x800 image (H=401, W=800): 400.8 resized height rounds to 321,
+        # leaving 319 pixels of padding split 159 top / 160 bottom.
+        image = np.ones((401, 800, 3), dtype=np.uint8) * 200
+
+        result, ratio, (left, top) = letterbox(image, new_shape=(640, 640))
+
+        self.assertEqual(result.shape, (640, 640, 3))
+        self.assertAlmostEqual(ratio[0], 0.8)
+        self.assertAlmostEqual(ratio[1], 0.8)
+        self.assertEqual((left, top), (0, 159))
+        np.testing.assert_array_equal(result[158, 320], (114, 114, 114))
+        np.testing.assert_array_equal(result[159, 320], [200, 200, 200])
+
+    @unittest.skipUnless(CV2_AVAILABLE, "NumPy and OpenCV are required")
+    def test_scale_to_original_odd_padding_round_trip(self):
+        # Inverse of the odd letterbox above: gain 0.8, actual top offset 159.
+        original_box = np.array([[100.0, 50.0, 300.0, 200.0]], dtype=np.float32)
+        input_box = original_box.copy()
+        input_box[:, [0, 2]] = input_box[:, [0, 2]] * 0.8
+        input_box[:, [1, 3]] = input_box[:, [1, 3]] * 0.8 + 159.0
+
+        restored = scale_to_original(
+            input_box,
+            input_shape=(640, 640),
+            original_shape=(401, 800),
+        )
+        np.testing.assert_allclose(restored, original_box, rtol=1e-6, atol=1e-5)
 
     @unittest.skipUnless(TORCH_AVAILABLE, "PyTorch and NumPy are required")
     def test_image_to_float_tensor(self):

@@ -33,7 +33,7 @@ def letterbox(image, new_shape=(640, 640), color=(114, 114, 114)):
         cv2.BORDER_CONSTANT,
         value=color,
     )
-    return image, ratio, (pad_width, pad_height)
+    return image, ratio, (left, top)
 
 
 def image_to_float_tensor(image_rgb, mean=(0.0, 0.0, 0.0), std=(1.0, 1.0, 1.0)):

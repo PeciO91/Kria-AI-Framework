@@ -234,6 +234,92 @@ def validate_yolov26_head(model: Any, config: Any) -> Any:
     return head
 
 
+def load_slim_state_dict(model: Any, state_dict: Any) -> Any:
+    """Resize ``model`` to ``state_dict`` shapes and strictly load it.
+
+    Family-local equivalent of Vitis AI's ``slim.load_state_dict`` that also
+    supports unchanged and pruned grouped convolutions.  Vitis AI 3.5 asserts
+    ``module.groups == 1``, which cannot reconstruct the depthwise convolutions
+    in YOLOv26 Detect/Segment heads, so the grouped rules are handled here.
+
+    The device of newly created parameters follows the state-dict tensors, so
+    the model's original device is restored after loading.
+    """
+
+    import torch.nn as nn
+
+    device = next(model.parameters()).device
+
+    for key, module in model.named_modules():
+        weight_key = f"{key}.weight"
+        bias_key = f"{key}.bias"
+        if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            if weight_key in state_dict:
+                module.weight = nn.Parameter(state_dict[weight_key])
+            if bias_key in state_dict:
+                module.bias = nn.Parameter(state_dict[bias_key])
+            if f"{key}.running_mean" in state_dict:
+                module.running_mean = state_dict[f"{key}.running_mean"]
+            if f"{key}.running_var" in state_dict:
+                module.running_var = state_dict[f"{key}.running_var"]
+            if f"{key}.num_batches_tracked" in state_dict:
+                module.num_batches_tracked = state_dict[f"{key}.num_batches_tracked"]
+            if module.weight is not None:
+                module.num_features = module.weight.size(0)
+            elif module.running_mean is not None:
+                module.num_features = module.running_mean.size(0)
+        elif isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+            weight = state_dict[weight_key]
+            was_depthwise = (
+                module.groups == module.in_channels == module.out_channels
+            )
+            module.weight = nn.Parameter(weight)
+            if bias_key in state_dict:
+                module.bias = nn.Parameter(state_dict[bias_key])
+            if was_depthwise:
+                if weight.size(1) != 1:
+                    raise ValueError(
+                        f"Depthwise convolution {key!r} requires a state weight "
+                        f"with one input channel per group, got {tuple(weight.shape)}"
+                    )
+                module.groups = weight.size(0)
+                module.in_channels = weight.size(0)
+                module.out_channels = weight.size(0)
+            elif module.groups == 1:
+                module.out_channels = weight.size(0)
+                module.in_channels = weight.size(1)
+            else:
+                if weight.size(0) % module.groups:
+                    raise ValueError(
+                        f"Grouped convolution {key!r} output channels "
+                        f"{weight.size(0)} are not divisible by groups={module.groups}"
+                    )
+                module.in_channels = weight.size(1) * module.groups
+                module.out_channels = weight.size(0)
+        elif isinstance(module, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
+            weight = state_dict[weight_key]
+            if module.groups != 1:
+                raise ValueError(
+                    f"Grouped transposed convolution {key!r} is not supported by "
+                    "load_slim_state_dict"
+                )
+            module.weight = nn.Parameter(weight)
+            if bias_key in state_dict:
+                module.bias = nn.Parameter(state_dict[bias_key])
+            module.in_channels = weight.size(0)
+            module.out_channels = weight.size(1)
+        elif isinstance(module, nn.Linear):
+            module.weight = nn.Parameter(state_dict[weight_key])
+            if bias_key in state_dict:
+                module.bias = nn.Parameter(state_dict[bias_key])
+            module.out_features = module.weight.size(0)
+            module.in_features = module.weight.size(1)
+
+    model.load_state_dict(state_dict)
+    model.to(device)
+    return model
+
+
 def build_model(
     config: Any,
     device: Any = "cpu",
@@ -268,12 +354,8 @@ def build_model(
             raise ValueError(
                 f"Optimized checkpoint {checkpoint} has representation {representation!r}; a slim checkpoint is required"
             )
-        try:
-            from pytorch_nndct.utils import slim
-        except ImportError as error:
-            raise ImportError("Loading an optimized YOLOv26 checkpoint requires the Vitis AI environment") from error
         wrapper = ultralytics.YOLO(str(architecture), task=task)
-        model = slim.load_state_dict(wrapper.model, extract_state_dict(checkpoint_payload))
+        model = load_slim_state_dict(wrapper.model, extract_state_dict(checkpoint_payload))
     else:
         wrapper = ultralytics.YOLO(str(checkpoint), task=task)
         model = wrapper.model
@@ -295,6 +377,7 @@ __all__ = [
     "get_yolov26_head",
     "import_local_ultralytics",
     "load_model",
+    "load_slim_state_dict",
     "resolve_project_path",
     "validate_yolov26_head",
 ]

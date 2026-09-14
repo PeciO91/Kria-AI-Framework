@@ -277,6 +277,108 @@ def resolve_output_order(output_dims, num_classes, reg_max, output_layouts=None)
     return [index for index, _ in sorted(ranked, key=lambda item: (-item[1], item[0]))]
 
 
+def validate_detection_output_contract(
+    output_dims,
+    num_classes,
+    reg_max,
+    num_levels,
+    output_layouts=None,
+):
+    """Validate the canonical two-tensors-per-level one2one output contract.
+
+    The raw-exported YOLOv26 detection graph emits exactly one box tensor
+    (``4 * reg_max`` channels) and one class tensor (``num_classes`` channels)
+    per stride level; fused tensors are not part of this contract.  Returns
+    the detection-output indices ordered from finest to coarsest grid, like
+    ``resolve_output_order``.
+    """
+
+    num_classes, reg_max = _validate_head_metadata(num_classes, reg_max)
+    try:
+        levels = int(num_levels)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"num_levels must be a positive integer, got {num_levels!r}") from error
+    if levels <= 0:
+        raise ValueError(f"num_levels must be positive, got {num_levels}")
+
+    box_channels = 4 * reg_max
+    expected_channels = (box_channels, num_classes)
+    output_count = len(output_dims)
+    expected_count = 2 * levels
+    if output_count != expected_count:
+        raise ValueError(
+            f"Expected {expected_count} detection outputs "
+            f"(box and class tensors for {levels} levels), "
+            f"got {len(output_dims)}"
+        )
+
+    spatial_groups = {}
+    for index, dims in enumerate(output_dims):
+        try:
+            shape = tuple(int(value) for value in dims)
+        except (TypeError, ValueError) as error:
+            raise TypeError(
+                f"output {index} dimensions must be a sequence of four integers"
+            ) from error
+        if len(shape) != 4 or any(value <= 0 for value in shape):
+            raise ValueError(
+                f"output {index} dimensions must be four positive integers, got {shape}"
+            )
+
+        layout = _value_for_output(
+            output_layouts, index, output_count, name="output_layouts"
+        )
+        normalized = _normalize_layout(layout)
+        if normalized is None:
+            if shape[-1] in expected_channels:
+                normalized = "NHWC"
+            elif shape[1] in expected_channels:
+                normalized = "NCHW"
+            else:
+                raise ValueError(
+                    f"output {index} shape {shape} has neither axis 1 nor axis -1 "
+                    f"equal to an expected channel count "
+                    f"(box={box_channels}, class={num_classes})"
+                )
+        channels = shape[-1] if normalized == "NHWC" else shape[1]
+        if channels not in expected_channels:
+            raise ValueError(
+                f"output {index} declared as {normalized} has {channels} channels; "
+                f"expected box={box_channels} or class={num_classes}"
+            )
+        if channels == box_channels == num_classes:
+            raise ValueError(
+                f"output {index} channel count {channels} is ambiguous because "
+                "4 * reg_max equals num_classes"
+            )
+        role = "box" if channels == box_channels else "class"
+
+        spatial = shape[1:3] if normalized == "NHWC" else shape[2:4]
+        members = spatial_groups.setdefault(spatial, set())
+        if role in members:
+            raise ValueError(
+                f"duplicate {role} output at spatial shape {spatial} (output {index})"
+            )
+        members.add(role)
+
+    if len(spatial_groups) != levels:
+        raise ValueError(
+            f"Expected {levels} detection levels but outputs expose "
+            f"{len(spatial_groups)} distinct spatial shapes"
+        )
+    for spatial, roles in spatial_groups.items():
+        if roles != {"box", "class"}:
+            missing = {"box", "class"} - roles
+            raise ValueError(
+                f"malformed detection level at spatial shape {spatial}: "
+                f"missing {sorted(missing)} tensor"
+            )
+
+    return resolve_output_order(
+        output_dims, num_classes, reg_max, output_layouts
+    )
+
+
 def _validate_head_metadata(num_classes, reg_max):
     if isinstance(num_classes, bool) or not isinstance(num_classes, (int, np.integer)):
         raise TypeError(f"num_classes must be a positive integer, got {num_classes!r}")
@@ -698,4 +800,5 @@ __all__ = [
     "decode_yolov26_output",
     "output_spatial_rank",
     "resolve_output_order",
+    "validate_detection_output_contract",
 ]

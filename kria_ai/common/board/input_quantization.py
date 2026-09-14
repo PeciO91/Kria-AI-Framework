@@ -31,7 +31,7 @@ def apply_normalization_lut(image_uint8, lut):
         try:
             import cv2
 
-            shaped_lut = lut if lut.ndim == 1 else lut.reshape(1, 256, lut.shape[1])
+            shaped_lut = lut if lut.ndim == 1 else lut.reshape(256, 1, lut.shape[1])
             output = cv2.LUT(image_uint8, shaped_lut)
             if output.dtype == np.int8:
                 _CV2_SIGNED_LUT_AVAILABLE = True

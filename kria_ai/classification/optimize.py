@@ -401,7 +401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_checkpoint = (
         Path(args.output_checkpoint).expanduser().resolve()
         if args.output_checkpoint
-        else optimizer_dir / f"{model_config.id}_optimized.pt"
+        else optimizer_dir / f"{model_config.id}_{args.method}_r{args.ratio:g}_optimized.pt"
     )
     output_checkpoint.parent.mkdir(parents=True, exist_ok=True)
     source_checkpoint = _resolved_source_checkpoint(model_config, args.checkpoint)

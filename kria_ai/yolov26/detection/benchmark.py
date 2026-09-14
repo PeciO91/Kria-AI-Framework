@@ -156,23 +156,40 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--output-report")
     args = parser.parse_args(argv)
 
-    from kria_ai.yolov26.decode import resolve_output_order
-
     model_config = get_model(args.model)
     dataset_config = get_dataset(args.dataset)
     board_config = get_board(args.board)
-    runner_count = board_config.validate_runner_count(args.threads or board_config.default_runners)
+    requested_runners = board_config.default_runners if args.threads is None else args.threads
+    try:
+        runner_count = board_config.validate_runner_count(requested_runners)
+    except (TypeError, ValueError) as error:
+        parser.error(str(error))
     if args.producers < 1 or args.queue_size < 1:
         parser.error("--producers and --queue-size must be positive")
+
+    from kria_ai.yolov26.decode import validate_detection_output_contract
+
     dpu_model = load_dpu_model(_xmodel_path(model_config.id, args.xmodel, args.build_root))
     input_metadata = dpu_model.inputs[0]
-    if len(input_metadata.shape) != 4 or input_metadata.shape[-1] != 3:
-        raise RuntimeError(f"Expected NHWC RGB input, got {input_metadata.shape}")
-    input_shape = input_metadata.shape[1:3]
-    output_order = resolve_output_order(
+    if (
+        len(input_metadata.shape) != 4
+        or input_metadata.shape[0] != 1
+        or input_metadata.shape[-1] != 3
+    ):
+        raise RuntimeError(
+            f"Expected a batch-one NHWC RGB input tensor, got {input_metadata.shape}"
+        )
+    input_shape = tuple(input_metadata.shape[1:3])
+    if input_shape != tuple(model_config.input_size):
+        raise RuntimeError(
+            f"XMODEL input {input_shape} does not match configured input "
+            f"{model_config.input_size}"
+        )
+    output_order = validate_detection_output_contract(
         [metadata.shape for metadata in dpu_model.outputs],
         model_config.num_classes,
         model_config.reg_max,
+        len(model_config.strides),
     )
     lut = build_normalization_lut(dataset_config.mean, dataset_config.std, input_metadata.fixed_point)
     dataset_root = Path(args.dataset_root) if args.dataset_root else dataset_config.board_images
