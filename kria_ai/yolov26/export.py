@@ -252,8 +252,9 @@ def _contract_from_head(head: Any) -> OutputContract:
         raise ValueError(
             f"YOLOv26 head nl={levels} is inconsistent with strides={strides}"
         )
-    if int(getattr(head, "nc", -1)) != 80:
-        raise ValueError(f"YOLOv26 raw export requires nc=80, got {getattr(head, 'nc', None)!r}")
+    num_classes = int(getattr(head, "nc", -1))
+    if num_classes < 1:
+        raise ValueError(f"YOLOv26 raw export requires positive nc, got {num_classes}")
     for branch_name in ("one2one_cv2", "one2one_cv3"):
         branch = getattr(head, branch_name, None)
         if branch is None or len(branch) != levels:
@@ -274,7 +275,7 @@ def _contract_from_head(head: Any) -> OutputContract:
     return _make_contract(
         task="segmentation" if is_segmentation else "detection",
         input_size=None,
-        num_classes=int(head.nc),
+        num_classes=num_classes,
         reg_max=int(head.reg_max),
         strides=strides,
         num_masks=int(head.nm) if is_segmentation else None,

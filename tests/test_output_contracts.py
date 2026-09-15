@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from kria_ai.yolov26.detection.config import get_model as get_detection_model
 from kria_ai.yolov26.export import build_output_contract
+from kria_ai.yolov26.models import validate_yolov26_head
 from kria_ai.yolov26.segmentation.config import get_model as get_segmentation_model
 
 
@@ -61,6 +62,32 @@ class TestDetectionOutputContract(unittest.TestCase):
         dims[0] = (1, 5, 80, 80)
         with self.assertRaises(ValueError):
             contract.validate(_outputs(dims))
+
+    def test_two_class_test_model_contract(self):
+        contract = build_output_contract(get_detection_model("yolov26n_dpu_test"))
+        dims = [
+            (1, 4, 80, 80),
+            (1, 2, 80, 80),
+            (1, 4, 40, 40),
+            (1, 2, 40, 40),
+            (1, 4, 20, 20),
+            (1, 2, 20, 20),
+        ]
+        outputs = _outputs(dims)
+        self.assertEqual(tuple(contract.validate(outputs)), tuple(outputs))
+
+    def test_two_class_head_validation(self):
+        class Detect:
+            nc = 2
+            nl = 3
+            stride = (8, 16, 32)
+            reg_max = 1
+            one2one_cv2 = [None, None, None]
+            one2one_cv3 = [None, None, None]
+
+        model = types.SimpleNamespace(model=[Detect()])
+        head = validate_yolov26_head(model, get_detection_model("yolov26n_dpu_test"))
+        self.assertIs(head, model.model[-1])
 
 
 class TestSegmentationOutputContract(unittest.TestCase):

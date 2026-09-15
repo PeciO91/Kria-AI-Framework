@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,10 +20,12 @@ class DetectionModelConfig:
     confidence_threshold: float
     max_detections: int
     prune_excludes: tuple[str, ...]
+    activation_policy: str | None = None
+    graph_policy: str | None = None
 
     def __post_init__(self):
-        if self.num_classes != len(COCO_CLASSES):
-            raise ValueError(f"{self.id}: YOLOv26 detection must use {len(COCO_CLASSES)} COCO classes")
+        if self.num_classes < 1:
+            raise ValueError(f"{self.id}: num_classes must be positive")
         if self.reg_max < 1 or not self.strides:
             raise ValueError(f"{self.id}: invalid head metadata")
 
@@ -60,6 +64,27 @@ MODELS = {
             "model.22.one2one_cv2.*.2",
             "model.22.one2one_cv3.*.2",
         ),
+    ),
+    "yolov26n_dpu_test": DetectionModelConfig(
+        id="yolov26n_dpu_test",
+        name="YOLO26n DPU Test",
+        checkpoint_path=Path("models/yolo26n_dpu_leaky_dwrelu.pt"),
+        repository_path=Path("models/ultralytics-main"),
+        architecture_path=Path("configs/yolo26n_dpu_leaky_dwrelu.yaml"),
+        input_size=(640, 640),
+        num_classes=2,
+        reg_max=1,
+        strides=(8, 16, 32),
+        confidence_threshold=0.1,
+        max_detections=300,
+        prune_excludes=(
+            "model.23.cv2.*.2",
+            "model.23.cv3.*.2",
+            "model.23.one2one_cv2.*.2",
+            "model.23.one2one_cv3.*.2",
+        ),
+        activation_policy="leaky_13_128_conv_relu_dw",
+        graph_policy="split_c3k2_cv1",
     ),
 }
 

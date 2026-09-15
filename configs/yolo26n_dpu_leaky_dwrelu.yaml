@@ -1,0 +1,166 @@
+nc: 2
+end2end: true
+reg_max: 1
+scales:
+  n:
+  - 0.5
+  - 0.25
+  - 1024
+  s:
+  - 0.5
+  - 0.5
+  - 1024
+  m:
+  - 0.5
+  - 1.0
+  - 512
+  l:
+  - 1.0
+  - 1.0
+  - 512
+  x:
+  - 1.0
+  - 1.5
+  - 512
+backbone:
+- - -1
+  - 1
+  - Conv
+  - - 64
+    - 3
+    - 2
+- - -1
+  - 1
+  - Conv
+  - - 128
+    - 3
+    - 2
+- - -1
+  - 2
+  - C3k2
+  - - 256
+    - false
+    - 0.25
+- - -1
+  - 1
+  - Conv
+  - - 256
+    - 3
+    - 2
+- - -1
+  - 2
+  - C3k2
+  - - 512
+    - false
+    - 0.25
+- - -1
+  - 1
+  - Conv
+  - - 512
+    - 3
+    - 2
+- - -1
+  - 2
+  - C3k2
+  - - 512
+    - true
+- - -1
+  - 1
+  - Conv
+  - - 1024
+    - 3
+    - 2
+- - -1
+  - 2
+  - C3k2
+  - - 1024
+    - true
+- - -1
+  - 1
+  - SPPF
+  - - 1024
+    - 5
+    - 3
+    - true
+- - -1
+  - 2
+  - C3k2
+  - - 1024
+    - true
+head:
+- - -1
+  - 1
+  - nn.Upsample
+  - - None
+    - 2
+    - nearest
+- - - -1
+    - 6
+  - 1
+  - Concat
+  - - 1
+- - -1
+  - 2
+  - C3k2
+  - - 512
+    - true
+- - -1
+  - 1
+  - nn.Upsample
+  - - None
+    - 2
+    - nearest
+- - - -1
+    - 4
+  - 1
+  - Concat
+  - - 1
+- - -1
+  - 2
+  - C3k2
+  - - 256
+    - true
+- - -1
+  - 1
+  - Conv
+  - - 256
+    - 3
+    - 2
+- - - -1
+    - 13
+  - 1
+  - Concat
+  - - 1
+- - -1
+  - 2
+  - C3k2
+  - - 512
+    - true
+- - -1
+  - 1
+  - Conv
+  - - 512
+    - 3
+    - 2
+- - - -1
+    - 10
+  - 1
+  - Concat
+  - - 1
+- - -1
+  - 1
+  - C3k2
+  - - 1024
+    - true
+    - 0.5
+    - false
+- - - 16
+    - 19
+    - 22
+  - 1
+  - Detect
+  - - nc
+scale: n
+activation: nn.LeakyReLU(negative_slope=0.1015625, inplace=True)
+yaml_file: yolo26n_dpu.yaml
+channels: 3

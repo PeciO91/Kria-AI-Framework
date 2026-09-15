@@ -36,6 +36,8 @@ def _detection(config):
         "conf_threshold": config.confidence_threshold,
         "decoder": "ultralytics_anchor_free",
         "prune_excludes": list(config.prune_excludes),
+        "activation_policy": getattr(config, "activation_policy", None),
+        "graph_policy": getattr(config, "graph_policy", None),
     }
 
 

@@ -178,10 +178,8 @@ def validate_yolov26_head(model: Any, config: Any) -> Any:
         )
 
     configured_classes = int(config.num_classes)
-    if configured_classes != 80:
-        raise ValueError(
-            f"YOLOv26 deployment requires the configured COCO nc=80, got {configured_classes}"
-        )
+    if configured_classes < 1:
+        raise ValueError(f"YOLOv26 configured nc must be positive, got {configured_classes}")
     head_classes = _integer_attribute(head, "nc")
     if head_classes != configured_classes:
         raise ValueError(f"YOLOv26 head nc={head_classes}; configured nc={configured_classes}")
@@ -320,6 +318,61 @@ def load_slim_state_dict(model: Any, state_dict: Any) -> Any:
     return model
 
 
+def apply_yolov26_graph_policy(model: Any, policy: str | None):
+    if policy is None:
+        return model, 0
+    if policy != "split_c3k2_cv1":
+        raise ValueError(f"Unknown YOLOv26 graph policy: {policy!r}")
+
+    from kria_ai.yolov26.dpu import C3k2DPU
+
+    ultralytics_modules = importlib.import_module("ultralytics.nn.modules")
+    c3k2_type = ultralytics_modules.C3k2
+    conv_type = ultralytics_modules.Conv
+
+    def replace_children(parent):
+        replacement_count = 0
+        for name, child in tuple(parent.named_children()):
+            if isinstance(child, c3k2_type):
+                setattr(parent, name, C3k2DPU(child, conv_type))
+                replacement_count += 1
+            else:
+                replacement_count += replace_children(child)
+        return replacement_count
+
+    return model, replace_children(model)
+
+
+def apply_yolov26_activation_policy(model: Any, policy: str | None):
+    if policy is None:
+        return model, 0, 0
+    if policy != "leaky_13_128_conv_relu_dw":
+        raise ValueError(f"Unknown YOLOv26 activation policy: {policy!r}")
+
+    import torch.nn as nn
+
+    ultralytics_modules = importlib.import_module("ultralytics.nn.modules")
+    conv_type = ultralytics_modules.Conv
+    dwconv_type = ultralytics_modules.DWConv
+    conv_count = 0
+    dwconv_count = 0
+
+    for module in tuple(model.modules()):
+        if isinstance(module, dwconv_type):
+            if not isinstance(module.act, nn.Identity):
+                module.act = nn.ReLU(inplace=True)
+                dwconv_count += 1
+        elif isinstance(module, conv_type):
+            if not isinstance(module.act, nn.Identity):
+                module.act = nn.LeakyReLU(
+                    negative_slope=13.0 / 128.0,
+                    inplace=True,
+                )
+                conv_count += 1
+
+    return model, conv_count, dwconv_count
+
+
 def build_model(
     config: Any,
     device: Any = "cpu",
@@ -359,6 +412,14 @@ def build_model(
     else:
         wrapper = ultralytics.YOLO(str(checkpoint), task=task)
         model = wrapper.model
+    model, _ = apply_yolov26_graph_policy(
+        model,
+        getattr(config, "graph_policy", None),
+    )
+    model, _, _ = apply_yolov26_activation_policy(
+        model,
+        getattr(config, "activation_policy", None),
+    )
     validate_yolov26_head(model, config)
     model.to(device)
     model.eval()
@@ -372,6 +433,8 @@ load_model = build_model
 __all__ = [
     "PROJECT_ROOT",
     "add_repository_to_import_path",
+    "apply_yolov26_activation_policy",
+    "apply_yolov26_graph_policy",
     "build_model",
     "clear_model_modules",
     "get_yolov26_head",

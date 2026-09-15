@@ -19,7 +19,7 @@ The code is organized by model family rather than a universal task abstraction.
 | Family | Models/tasks | Status |
 |---|---|---|
 | Classification | ResNet18/50, MobileNetV2, MobileNetV3-Large | Deployment path migrated; hardware parity validation required |
-| YOLOv26 detection | YOLOv26s, COCO-80, one2one anchor-free output | Deployment path migrated; hardware parity validation required |
+| YOLOv26 detection | YOLOv26s COCO-80 plus a YOLO26n 2-class architecture-only framework test, one2one anchor-free output | Deployment path migrated; hardware parity validation required |
 | YOLOv26 instance segmentation | YOLOv26n-Seg, COCO-80, CPU mask assembly | Deployment path migrated; hardware parity validation required |
 | Optimizer/pruning | Family-specific Vitis iterative and one-step flows | Experimental; run only in Vitis AI Docker |
 
@@ -90,6 +90,15 @@ python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --m
 python -m kria_ai yolov26 detection compile --model yolov26s
 ```
 
+The experimental `yolov26n_dpu_test` model exercises the same inspect/quantize/compile flow with a 2-class head. Its loaded compatible weights are for architecture/Vitis flow validation only, not detection accuracy; COCO images are used solely as unlabeled calibration input. Its loader enforces LeakyReLU(13/128) for normal Conv and ReLU for DWConv because DPUCZDX8G does not support fused depthwise LeakyReLU. Its loader also replaces C3k2's runtime channel chunk with two weight-equivalent Conv branches to avoid `nndct_strided_slice`.
+
+```bash
+python -m kria_ai yolov26 detection inspect --model yolov26n_dpu_test
+python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode calib --subset-len 100
+python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode test
+python -m kria_ai yolov26 detection compile --model yolov26n_dpu_test
+```
+
 ### YOLOv26 instance segmentation
 
 ```bash
@@ -99,7 +108,7 @@ python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset c
 python -m kria_ai yolov26 segmentation compile --model yolov26n_seg
 ```
 
-YOLOv26 model loading validates the checkpoint head against the configured COCO-80 contract. An 8-class checkpoint is rejected rather than decoded with incorrect metadata.
+YOLOv26 model loading validates the checkpoint head against the configured class/head metadata exactly. Production models remain COCO-80 while the `yolov26n_dpu_test` framework test is nc=2; a checkpoint whose head does not match its configured nc is rejected rather than decoded with incorrect metadata.
 
 AdaQuant is available for classification. YOLOv26 `--fast-ft` is intentionally disabled until a callback is validated against the patched raw-output graph.
 
