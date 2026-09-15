@@ -5,6 +5,7 @@ __pycache__/
 models/
 
 build/
+build_fast_ft/
 *.xmodel
 *.onnx_int.onnx
 

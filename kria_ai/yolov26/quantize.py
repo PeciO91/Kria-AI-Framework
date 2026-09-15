@@ -33,6 +33,19 @@ def _adapt_batch(batch, device):
     return (images,), {}, images.size(0)
 
 
+def _forward_loop(model, batches, device):
+    import torch
+
+    model.eval()
+    processed_samples = 0
+    with torch.no_grad():
+        for batch in batches:
+            positional, keyword, sample_count = _adapt_batch(batch, device)
+            model(*positional, **keyword)
+            processed_samples += sample_count
+    return processed_samples
+
+
 def quantize_yolov26(
     task: str,
     *,
@@ -51,9 +64,6 @@ def quantize_yolov26(
     """Run Vitis AI quantization for YOLOv26 detection or segmentation models."""
     if task not in ("detection", "segmentation"):
         raise ValueError(f"task must be 'detection' or 'segmentation', got {task!r}")
-    if fast_ft:
-        raise ValueError("YOLOv26 AdaQuant is disabled until a raw-export-graph callback is validated")
-
     import torch
 
     model_config, dataset_config = _configs(task, model_id, dataset_id)
@@ -76,6 +86,13 @@ def quantize_yolov26(
         batch_size=batch_sz,
         seed=seed,
     )
+    fast_finetune = None
+    if fast_ft and mode == "calib":
+        fast_finetune = lambda quant_model: _forward_loop(
+            quant_model,
+            loader,
+            torch_device,
+        )
     artifacts = ArtifactPaths(model_config.id, build_root)
     return run_quantization(
         mode=mode,
@@ -88,6 +105,8 @@ def quantize_yolov26(
         xmodel_filename=artifacts.quantized_xmodel.name,
         target=board_config.dpu_fingerprint,
         max_samples=sample_count,
+        fast_finetune=fast_finetune,
+        load_fast_finetune=fast_ft and mode == "test",
     )
 
 
@@ -114,9 +133,6 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--build-root", default="build")
     parser.add_argument("--fast-ft", action="store_true")
     args = parser.parse_args(argv)
-
-    if args.fast_ft:
-        parser.error("YOLOv26 AdaQuant is disabled until a raw-export-graph callback is validated")
 
     result = quantize_yolov26(
         args.task,

@@ -25,6 +25,8 @@ class _FakeQuantModel:
     def __init__(self):
         self.forwards = 0
         self.was_eval = False
+        self.fast_finetuned = False
+        self.fast_finetune_loaded = False
 
     def eval(self):
         self.was_eval = True
@@ -48,6 +50,13 @@ class _FakeQuantizer:
 
     def export_xmodel(self, output_dir, deploy_check=False):
         Path(output_dir, f"{self._model.__class__.__name__}_int.xmodel").write_text("xmodel")
+
+    def fast_finetune(self, callback, args):
+        self.quant_model.fast_finetuned = True
+        callback(*args)
+
+    def load_ft_param(self):
+        self.quant_model.fast_finetune_loaded = True
 
 
 class _FakeTorch(types.ModuleType):
@@ -169,6 +178,47 @@ class TestQuantizerLifecycle(unittest.TestCase):
                 "xmodel": str(expected_xmodel),
             },
         )
+
+    def test_calib_mode_runs_fast_finetune_callback(self):
+        calls = []
+        result = run_quantization(
+            mode="calib",
+            model=ToyModel(),
+            example_inputs=(object(),),
+            batches=["batch-1", "batch-2"],
+            adapt_batch=_adapt_batch,
+            device="cpu",
+            output_dir=self.output_dir,
+            target="fingerprint",
+            fast_finetune=lambda quant_model: quant_model("ft-batch"),
+            quantizer_factory=self._factory(calls),
+        )
+
+        self.assertTrue(result.quant_model.fast_finetuned)
+        self.assertEqual(result.quant_model.forwards, 3)
+        self.assertEqual(result.processed_samples, 2)
+        self.assertTrue(result.quant_config_path.is_file())
+
+    def test_test_mode_loads_fast_finetune_parameters(self):
+        calls = []
+        result = run_quantization(
+            mode="test",
+            model=ToyModel(),
+            example_inputs=(object(),),
+            batches=["batch-1"],
+            adapt_batch=_adapt_batch,
+            device="cpu",
+            output_dir=self.output_dir,
+            xmodel_filename="toy_int.xmodel",
+            target="fingerprint",
+            load_fast_finetune=True,
+            quantizer_factory=self._factory(calls),
+        )
+
+        self.assertTrue(result.quant_model.fast_finetune_loaded)
+        self.assertEqual(result.quant_model.forwards, 1)
+        self.assertEqual(result.xmodel_path, self.output_dir / "toy_int.xmodel")
+        self.assertTrue(result.xmodel_path.is_file())
 
 
 if __name__ == "__main__":

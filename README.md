@@ -99,6 +99,14 @@ python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset
 python -m kria_ai yolov26 detection compile --model yolov26n_dpu_test
 ```
 
+Fast Finetune can be exercised on the test model with a separate build root so baseline artifacts under `build/` are preserved:
+
+```bash
+python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode calib --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode test --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection compile --model yolov26n_dpu_test --build-root build_fast_ft
+```
+
 ### YOLOv26 instance segmentation
 
 ```bash
@@ -110,7 +118,7 @@ python -m kria_ai yolov26 segmentation compile --model yolov26n_seg
 
 YOLOv26 model loading validates the checkpoint head against the configured class/head metadata exactly. Production models remain COCO-80 while the `yolov26n_dpu_test` framework test is nc=2; a checkpoint whose head does not match its configured nc is rejected rather than decoded with incorrect metadata.
 
-AdaQuant is available for classification. YOLOv26 `--fast-ft` is intentionally disabled until a callback is validated against the patched raw-output graph.
+AdaQuant is available for classification. YOLOv26 Fast Finetune is experimental and uses an image-only forward callback over the patched raw-output graph.
 
 ## Optimizer
 
