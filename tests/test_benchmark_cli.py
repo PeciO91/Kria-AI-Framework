@@ -30,6 +30,16 @@ class TestBenchmarkRunnerValidation(unittest.TestCase):
     def test_detection_rejects_five_threads(self):
         self._assert_rejects_threads(detection_main, 5)
 
+    def test_detection_accuracy_requires_labels_directory(self):
+        with self.assertRaises(SystemExit) as context:
+            detection_main(["--accuracy"])
+        self.assertEqual(context.exception.code, 2)
+
+    def test_detection_rejects_invalid_confidence_threshold(self):
+        with self.assertRaises(SystemExit) as context:
+            detection_main(["--confidence-threshold", "1.1"])
+        self.assertEqual(context.exception.code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

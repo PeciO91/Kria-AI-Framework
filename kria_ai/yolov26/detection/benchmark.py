@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import queue
@@ -60,8 +62,16 @@ def _consumer(
     profiler,
     draw,
     save,
+    accuracy,
+    labels_dir,
+    confidence_threshold,
+    iou_thresholds,
 ):
     from kria_ai.yolov26.decode import UltralyticsDecoderCache, decode_ultralytics_output
+    from kria_ai.yolov26.detection.evaluate import (
+        load_yolo_detection_labels,
+        match_detection_predictions,
+    )
     from kria_ai.yolov26.detection.postprocess import draw_detections, postprocess_detections
 
     runner = create_runner(dpu_model)
@@ -71,6 +81,9 @@ def _consumer(
     total = 0
     dpu_time = 0.0
     class_histogram = {}
+    evaluation_records = []
+    ground_truth_counts = {}
+    labeled_images = 0
     while True:
         item = input_queue.get()
         if item is None:
@@ -88,7 +101,7 @@ def _consumer(
         boxes, scores, class_ids = decode_ultralytics_output(
             output_buffers,
             scales,
-            model_config.confidence_threshold,
+            confidence_threshold,
             cache,
             output_order,
             model_config.num_classes,
@@ -106,6 +119,33 @@ def _consumer(
         for class_id in class_ids:
             value = int(class_id)
             class_histogram[value] = class_histogram.get(value, 0) + 1
+        if accuracy:
+            started = time.perf_counter()
+            label_path = labels_dir / f"{Path(filename).stem}.txt"
+            labeled_images += int(label_path.is_file())
+            ground_truth_classes, ground_truth_boxes = load_yolo_detection_labels(
+                label_path,
+                original_shape,
+                model_config.num_classes,
+            )
+            for class_id in ground_truth_classes:
+                value = int(class_id)
+                ground_truth_counts[value] = ground_truth_counts.get(value, 0) + 1
+            matches = match_detection_predictions(
+                class_ids,
+                scores,
+                boxes,
+                ground_truth_classes,
+                ground_truth_boxes,
+                iou_thresholds,
+            )
+            evaluation_records.extend(
+                (int(class_id), float(score), matched.copy(), filename, prediction_index)
+                for prediction_index, (class_id, score, matched) in enumerate(
+                    zip(class_ids, scores, matches)
+                )
+            )
+            profiler.add("accuracy", time.perf_counter() - started)
         if draw:
             original_image = draw_detections(
                 original_image,
@@ -119,7 +159,15 @@ def _consumer(
         total += 1
         progress.increment()
         input_queue.task_done()
-    results[index] = (total, dpu_time, class_histogram, profiler)
+    results[index] = (
+        total,
+        dpu_time,
+        class_histogram,
+        profiler,
+        evaluation_records,
+        ground_truth_counts,
+        labeled_images,
+    )
     del runner
 
 
@@ -137,6 +185,30 @@ def _xmodel_path(model_id, explicit, build_root):
     return local if local.is_file() else ArtifactPaths(model_id, build_root).compiled_xmodel
 
 
+def _accuracy_metrics(results, num_classes, iou_thresholds):
+    from kria_ai.yolov26.detection.evaluate import aggregate_detection_metrics
+
+    evaluation_records = []
+    ground_truth_counts = {}
+    labeled_images = 0
+    for result in results:
+        if not result:
+            continue
+        evaluation_records.extend(result[4])
+        for class_id, count in result[5].items():
+            ground_truth_counts[class_id] = ground_truth_counts.get(class_id, 0) + count
+        labeled_images += result[6]
+    metrics = aggregate_detection_metrics(
+        evaluation_records,
+        ground_truth_counts,
+        num_classes,
+        iou_thresholds,
+    )
+    metrics["ground_truths"] = sum(ground_truth_counts.values())
+    metrics["labeled_images"] = labeled_images
+    return metrics
+
+
 def main(argv: Sequence[str] | None = None):
     parser = argparse.ArgumentParser(prog="python -m kria_ai yolov26 detection benchmark")
     parser.add_argument("--model")
@@ -148,6 +220,9 @@ def main(argv: Sequence[str] | None = None):
     parser.add_argument("--threads", type=int)
     parser.add_argument("--producers", type=int, default=4)
     parser.add_argument("--queue-size", type=int, default=40)
+    parser.add_argument("--accuracy", action="store_true")
+    parser.add_argument("--labels-dir")
+    parser.add_argument("--confidence-threshold", type=float)
     parser.add_argument("--no-draw", action="store_true")
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--profile", action="store_true")
@@ -166,8 +241,21 @@ def main(argv: Sequence[str] | None = None):
         parser.error(str(error))
     if args.producers < 1 or args.queue_size < 1:
         parser.error("--producers and --queue-size must be positive")
+    if args.accuracy and not args.labels_dir:
+        parser.error("--accuracy requires --labels-dir")
+    if args.confidence_threshold is not None and not 0.0 <= args.confidence_threshold <= 1.0:
+        parser.error("--confidence-threshold must be in [0, 1]")
+    labels_dir = Path(args.labels_dir) if args.labels_dir else None
+    if labels_dir is not None and not labels_dir.is_dir():
+        parser.error(f"Label directory not found: {labels_dir}")
+    confidence_threshold = args.confidence_threshold
+    if confidence_threshold is None:
+        confidence_threshold = 0.001 if args.accuracy else model_config.confidence_threshold
 
     from kria_ai.yolov26.decode import validate_detection_output_contract
+    from kria_ai.yolov26.detection.evaluate import DETECTION_IOU_THRESHOLDS
+
+    iou_thresholds = DETECTION_IOU_THRESHOLDS
 
     dpu_model = load_dpu_model(_xmodel_path(model_config.id, args.xmodel, args.build_root))
     input_metadata = dpu_model.inputs[0]
@@ -220,7 +308,8 @@ def main(argv: Sequence[str] | None = None):
             args=(
                 index, input_queue, output_queue, dpu_model, input_shape,
                 model_config, dataset_config, output_order, progress, results,
-                profiler, draw, save,
+                profiler, draw, save, args.accuracy, labels_dir,
+                confidence_threshold, iou_thresholds,
             ),
         )
         thread.start()
@@ -255,6 +344,10 @@ def main(argv: Sequence[str] | None = None):
         monitor.stop()
 
     total = sum(result[0] for result in results if result)
+    if args.accuracy and total != len(images):
+        raise RuntimeError(
+            f"Accuracy evaluation processed {total} of {len(images)} images"
+        )
     dpu_time = sum(result[1] for result in results if result)
     class_histogram = {}
     for result in results:
@@ -264,17 +357,46 @@ def main(argv: Sequence[str] | None = None):
     detection_count = sum(class_histogram.values())
     fps = total / wall_time if wall_time else 0.0
     power = monitor.average(idle_power)
+    accuracy_metrics = (
+        _accuracy_metrics(results, model_config.num_classes, iou_thresholds)
+        if args.accuracy
+        else None
+    )
+    if accuracy_metrics is not None and accuracy_metrics["ground_truths"] == 0:
+        raise RuntimeError(f"No ground-truth boxes found under {labels_dir}")
+    report_metrics = [
+        ("Images processed:", total),
+        ("Detections:", detection_count),
+        ("Application FPS:", f"{fps:.2f}"),
+        ("DPU latency:", f"{dpu_time / total * 1000.0:.2f} ms" if total else "N/A"),
+        ("Power:", f"{power:.2f} W"),
+        ("Energy/image:", f"{power / fps * 1000.0:.2f} mJ" if fps else "N/A"),
+        ("Compute efficiency:", "N/A"),
+    ]
+    if accuracy_metrics is not None:
+        report_metrics.extend([
+            ("Labeled images:", accuracy_metrics["labeled_images"]),
+            ("Ground-truth boxes:", accuracy_metrics["ground_truths"]),
+            ("Score threshold:", f"{confidence_threshold:.4f}"),
+            ("Precision@0.5:", f"{accuracy_metrics['precision']:.4f}"),
+            ("Recall@0.5:", f"{accuracy_metrics['recall']:.4f}"),
+            ("mAP@0.5:", f"{accuracy_metrics['map50']:.4f}"),
+            ("mAP@0.5:0.95:", f"{accuracy_metrics['map50_95']:.4f}"),
+        ])
+        for class_id, class_name in enumerate(dataset_config.classes):
+            class_metrics = accuracy_metrics["per_class"].get(class_id)
+            if class_metrics is None:
+                continue
+            report_metrics.append((
+                f"{class_name}:",
+                f"P={class_metrics['precision']:.4f} "
+                f"R={class_metrics['recall']:.4f} "
+                f"AP50={class_metrics['map50']:.4f} "
+                f"AP50-95={class_metrics['map50_95']:.4f}",
+            ))
     report = format_metrics(
         f"YOLOV26 DETECTION: {model_config.name} | DPU RUNNERS: {runner_count}",
-        [
-            ("Images processed:", total),
-            ("Detections:", detection_count),
-            ("Application FPS:", f"{fps:.2f}"),
-            ("DPU latency:", f"{dpu_time / total * 1000.0:.2f} ms" if total else "N/A"),
-            ("Power:", f"{power:.2f} W"),
-            ("Energy/image:", f"{power / fps * 1000.0:.2f} mJ" if fps else "N/A"),
-            ("Compute efficiency:", "N/A"),
-        ],
+        report_metrics,
     )
     profilers = [*producer_profilers, *(result[3] for result in results if result), writer_profiler]
     profile = merge_stage_profilers(profilers) if profile_enabled else None
@@ -301,6 +423,8 @@ def main(argv: Sequence[str] | None = None):
             "wall_time_s": wall_time,
             "fps": fps,
             "dpu_latency_ms": dpu_time / total * 1000.0 if total else None,
+            "confidence_threshold": confidence_threshold,
+            "accuracy": accuracy_metrics,
             "stages": profile.summary(wall_time),
         }
         report_path.with_name(f"{report_path.stem}_profile.json").write_text(

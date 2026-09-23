@@ -90,21 +90,21 @@ python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --m
 python -m kria_ai yolov26 detection compile --model yolov26s
 ```
 
-The experimental `yolov26n_dpu_test` model exercises the same inspect/quantize/compile flow with a 2-class head. Its loaded compatible weights are for architecture/Vitis flow validation only, not detection accuracy; COCO images are used solely as unlabeled calibration input. Its loader enforces LeakyReLU(13/128) for normal Conv and ReLU for DWConv because DPUCZDX8G does not support fused depthwise LeakyReLU. Its loader also replaces C3k2's runtime channel chunk with two weight-equivalent Conv branches to avoid `nndct_strided_slice`.
+The `yolov26n_FaceHuman` model uses a 2-class `Person`/`Human face` head and the OpenImagesV7 dataset. Its loader enforces LeakyReLU(13/128) for normal Conv and ReLU for DWConv because DPUCZDX8G does not support fused depthwise LeakyReLU. Its loader also replaces C3k2's runtime channel chunk with two weight-equivalent Conv branches to avoid `nndct_strided_slice`.
 
 ```bash
-python -m kria_ai yolov26 detection inspect --model yolov26n_dpu_test
-python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode calib --subset-len 100
-python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode test
-python -m kria_ai yolov26 detection compile --model yolov26n_dpu_test
+python -m kria_ai yolov26 detection inspect --model yolov26n_FaceHuman
+python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode calib --subset-len 100
+python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode test
+python -m kria_ai yolov26 detection compile --model yolov26n_FaceHuman
 ```
 
-Fast Finetune can be exercised on the test model with a separate build root so baseline artifacts under `build/` are preserved:
+Fast Finetune can be exercised with a separate build root so baseline artifacts under `build/` are preserved:
 
 ```bash
-python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode calib --fast-ft --build-root build_fast_ft
-python -m kria_ai yolov26 detection quantize --model yolov26n_dpu_test --dataset coco --mode test --fast-ft --build-root build_fast_ft
-python -m kria_ai yolov26 detection compile --model yolov26n_dpu_test --build-root build_fast_ft
+python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode calib --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode test --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection compile --model yolov26n_FaceHuman --build-root build_fast_ft
 ```
 
 ### YOLOv26 instance segmentation
@@ -116,7 +116,7 @@ python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset c
 python -m kria_ai yolov26 segmentation compile --model yolov26n_seg
 ```
 
-YOLOv26 model loading validates the checkpoint head against the configured class/head metadata exactly. Production models remain COCO-80 while the `yolov26n_dpu_test` framework test is nc=2; a checkpoint whose head does not match its configured nc is rejected rather than decoded with incorrect metadata.
+YOLOv26 model loading validates the checkpoint head against the configured class/head metadata exactly. The COCO model remains COCO-80 while `yolov26n_FaceHuman` is nc=2; a checkpoint whose head does not match its configured nc is rejected rather than decoded with incorrect metadata.
 
 AdaQuant is available for classification. YOLOv26 Fast Finetune is experimental and uses an image-only forward callback over the patched raw-output graph.
 
@@ -160,6 +160,8 @@ python3 -m kria_ai classification benchmark --model resnet18 --dataset intel_ima
 python3 -m kria_ai yolov26 detection benchmark --model yolov26s --dataset coco --xmodel yolov26s_kria.xmodel --threads 2 --profile
 python3 -m kria_ai yolov26 segmentation benchmark --model yolov26n_seg --dataset coco --xmodel yolov26n_seg_kria.xmodel --threads 2 --profile
 ```
+
+Detection supports `--accuracy --labels-dir ...` for class-aware precision, recall, mAP@0.5, and mAP@0.5:0.95. Accuracy mode defaults to a 0.001 confidence threshold so AP is evaluated across the score curve; override it with `--confidence-threshold` when needed.
 
 Segmentation supports `--accuracy --labels-dir ...` for the current mask mAP@0.5 metric and `--video ... --threads 1 --producers 1` for ordered file-video inference.
 

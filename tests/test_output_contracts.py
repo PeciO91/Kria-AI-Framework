@@ -64,7 +64,7 @@ class TestDetectionOutputContract(unittest.TestCase):
             contract.validate(_outputs(dims))
 
     def test_two_class_test_model_contract(self):
-        contract = build_output_contract(get_detection_model("yolov26n_dpu_test"))
+        contract = build_output_contract(get_detection_model("yolov26n_FaceHuman"))
         dims = [
             (1, 4, 80, 80),
             (1, 2, 80, 80),
@@ -86,7 +86,7 @@ class TestDetectionOutputContract(unittest.TestCase):
             one2one_cv3 = [None, None, None]
 
         model = types.SimpleNamespace(model=[Detect()])
-        head = validate_yolov26_head(model, get_detection_model("yolov26n_dpu_test"))
+        head = validate_yolov26_head(model, get_detection_model("yolov26n_FaceHuman"))
         self.assertIs(head, model.model[-1])
 
 
