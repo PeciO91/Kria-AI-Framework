@@ -30,3 +30,9 @@ guides/
 *.bak
 *:Zone.Identifier
 YOLOv26n_Instance_Segmentation_Progress.md
+.projectmem/events.jsonl
+.projectmem/watch.pid
+.projectmem/watch.log
+.projectmem/structure.json
+
+.projectmem/AI_INSTRUCTIONS.md.bak
