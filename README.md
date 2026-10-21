@@ -163,6 +163,18 @@ python3 -m kria_ai yolov26 segmentation benchmark --model yolov26n_seg --dataset
 
 Detection supports `--accuracy --labels-dir ...` for class-aware precision, recall, mAP@0.5, and mAP@0.5:0.95. Accuracy mode defaults to a 0.001 confidence threshold so AP is evaluated across the score curve; override it with `--confidence-threshold` when needed.
 
+Detection profiling supports `--profile` (aggregate and per-worker tables) and `--profile-json` (a sibling `<report-stem>_profile.json` file). To isolate inference pipeline costs from rendering, saving and accuracy evaluation, add these flags to the detection command and omit `--accuracy`:
+
+```text
+--confidence-threshold 0.3 --no-draw --no-save --profile --profile-json
+```
+
+The profile separates image read/JPEG decode, RGB conversion plus preprocessing, input/output queue waits, runner setup, CPU decoding, top-k, coordinate scaling, drawing, and image writing. The existing `preprocess` stage now excludes image reading. JSON retains the original summary fields and adds per-worker stages, producer/queue/output settings, board and artifact paths, and SOM power/energy with availability and idle-fallback information.
+
+Interpret timing rows carefully: parent/child stages overlap, totals accumulate elapsed time across threads, and `wall_pct` may exceed 100%; it is not CPU/DPU utilization or an exclusive bottleneck percentage. Decoder threshold/dequantization/scoring/box samples are per pyramid level, not per image. Application FPS includes worker startup, image loading, enabled accuracy/drawing/saving and pipeline drain; model loading and main-thread OpenCV initialization are excluded and no warmup images are discarded. `runner_setup` is reported separately. The `dpu` stage measures VART submit/wait, not pure hardware compute or separate DMA/cache synchronization. Queue-wait counts include end-of-stream sentinels; per-image totals do not.
+
+Detection initializes and checks OpenCV on the main thread before starting workers. Producer, DPU-consumer and writer exceptions cancel the pipeline and propagate to a nonzero CLI exit; no success report is written after a worker failure. A run that processes zero images is also an error.
+
 Segmentation supports `--accuracy --labels-dir ...` for the current mask mAP@0.5 metric and `--video ... --threads 1 --producers 1` for ordered file-video inference.
 
 Board code imports XIR/VART lazily, validates the KV260 1-4 runner limit, and reports unavailable power/compute metrics without crashing.
