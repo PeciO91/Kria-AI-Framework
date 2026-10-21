@@ -1,7 +1,7 @@
 # Project Map - Kria Vitis AI Experimental Deployment Platform
 
 ## Project purpose
-Deploy PyTorch image-classification and YOLOv26 detection/instance-segmentation models to the AMD/Xilinx Kria KV260 using Vitis AI 3.5. The family-owned flow covers inspection, optional experimental pruning/fine-tuning, INT8 calibration/test, XMODEL compilation, manual deployment and board benchmarking; hardware parity validation is still required.
+Deploy PyTorch image-classification and YOLOv26 detection/instance-segmentation models to the AMD/Xilinx Kria KV260 using Vitis AI 3.5. The family-owned flow covers inspection, optional experimental pruning/fine-tuning, INT8 calibration/test, XMODEL compilation, manual deployment and board benchmarking. A two-class FaceHuman INT8 Fast Finetune artifact has a recorded 5,000-image KV260 experiment; broader model/task hardware validation remains pending.
 
 ## Stack
 - Python and PyTorch; torchvision classification and a local Ultralytics checkout for YOLOv26.
@@ -16,8 +16,8 @@ Deploy PyTorch image-classification and YOLOv26 detection/instance-segmentation 
 - `scripts/` and root registries remain compatibility adapters, not separate pipeline implementations.
 
 ## Structure
-- `README.md` - current scope, architecture, commands and validation status.
-- `DATASET_PREPARATION.md` - detection box labels, segmentation polygons and calibration semantics.
+- `README.md` - public research-engineering overview, Mermaid pipeline, evidence-specific status, measured KV260 tables and quick start.
+- `DATASET_PREPARATION.md` - real task-registry paths/classes, detection boxes, segmentation polygons, calibration and board layout caveats.
 - `.windsurfrules` - deployment constraints; some legacy architecture descriptions predate kria_ai.
 - `AGENTS.md` and `CLAUDE.md` - projectmem session-start and audit-trail bridges.
 - `model_config.py`, `dataset_config.py`, `board_config.py` - public compatibility registry views backed by family/board dataclasses.
@@ -68,7 +68,11 @@ Deploy PyTorch image-classification and YOLOv26 detection/instance-segmentation 
 - `data/` - datasets and deterministic subset caches; do not edit calibration artifacts manually.
 - `build/`, `build_fast_ft/` - generated deployment artifacts and isolated Fast Finetune experiments.
 - `results/` - benchmark/evaluation output.
-- `docs/` - supplementary documentation; verify legacy examples against current README and CLI.
+- `docs/` - public guides and curated evidence are explicitly allowlisted; legacy local scripts remain ignored.
+  - `docs/architecture.md` - family/common ownership, configuration, artifacts and CPU/DPU/manual deployment contracts.
+  - `docs/experiments.md` - measurement scopes, frozen KV260 results, non-comparable T4 context and reproducibility limitations.
+  - `docs/evidence/kv260-facehuman-2026-10-21.json` - sanitized numeric excerpt and provenance from four completed board runs.
+  - `docs/evidence/t4-facehuman-context.json` - sanitized two-class FP32 T4 report excerpts; not COCO registry or controlled quantization comparison.
 
 ## Relationships
 - `kria_ai/__main__.py` calls `kria_ai/cli.py`, which dispatches to `kria_ai/classification/cli.py` or `kria_ai/yolov26/cli.py`.

@@ -1,0 +1,757 @@
+{
+  "schema_version": 1,
+  "description": "Contextual two-class YOLO26 FP32 T4 exports; not a controlled comparison with the KV260 deployment.",
+  "curation_notes": [
+    "Curated excerpts retaining reported metric precision, execution settings and measurement windows.",
+    "Omitted checkpoint/run paths and per-image filename lists.",
+    "Model scale s here identifies a two-class exported checkpoint, not the repository's COCO-80 yolov26s registry entry."
+  ],
+  "reports": [
+    {
+      "model_scale": "n",
+      "source_report": {
+        "report": "yolo26n_fp32_kria_comparison_metrics.json",
+        "sha256": "f98e55ed19403f62952c0ff83e8b532ce6502d92f03cd789ea215f46e0bf7572"
+      },
+      "checkpoint": {
+        "sha256": "5d56b676c457aef04e4df776a957c7c9329da49d375ba598f961184e25b3933d"
+      },
+      "execution_metadata": {
+        "gpu_model": "Tesla T4",
+        "num_gpus_visible": 2,
+        "device_used": 0,
+        "inference_dtype": "float32",
+        "amp_enabled": false,
+        "half_precision": false,
+        "pytorch_version": "2.11.0+cu128",
+        "cuda_version": "12.8",
+        "cudnn_version": 91900,
+        "ultralytics_version": "8.4.150",
+        "warmup_runs": 50,
+        "timed_runs_images": 500
+      },
+      "explicit_evaluation_settings": {
+        "operating_point_confidence": 0.3,
+        "map_baseline_confidence": 0.001,
+        "evaluation_matching_iou_threshold": 0.5,
+        "nms_iou_threshold": 0.7,
+        "nms_iou_active_in_execution": true,
+        "max_det": 300,
+        "nms_enabled": true,
+        "end2end_nms_free_head": false,
+        "decoding_strategy": "one2many_anchor_decode_plus_nms",
+        "head_verification_details": {
+          "head_class": "Detect",
+          "reg_max_dfl_bins": 1,
+          "dfl_free": true,
+          "unfused_checkpoint_had_one2one_branch": true,
+          "unfused_checkpoint_had_one2many_branch": true,
+          "end2end_nms_free_head": false,
+          "nms_enabled": true,
+          "decoding_strategy": "one2many_anchor_decode_plus_nms"
+        },
+        "imgsz": 640,
+        "throughput_batch_size": 16,
+        "latency_batch_size": 1
+      },
+      "dataset": {
+        "name": "Open Images V7 test split",
+        "class_names": [
+          "Person",
+          "Human face"
+        ],
+        "num_images": 5000
+      },
+      "accuracy_standard_map_untruncated_conf_0001": {
+        "description": "Standard mAP evaluation with conf=0.001 so the Precision-Recall curve is not truncated.",
+        "overall": {
+          "metrics/precision(B)": 0.42570866656579665,
+          "metrics/recall(B)": 0.5597217012164604,
+          "metrics/mAP50(B)": 0.439177636759253,
+          "metrics/mAP50-95(B)": 0.30725042735391095,
+          "fitness": 0.30725042735391095
+        }
+      },
+      "accuracy_operating_point_conf_030": {
+        "description": "Precision, Recall, F1 and Confusion Matrix evaluated strictly at confidence=0.3 and matching IoU=0.5 (matching Kria evaluation criteria).",
+        "from_confusion_matrix_at_conf_030_iou_050": {
+          "evaluated_confidence_threshold": 0.3,
+          "matching_iou_threshold": 0.5,
+          "macro_average": {
+            "precision": 0.408667,
+            "recall": 0.571519,
+            "f1": 0.476565,
+            "f1_harmonic_of_macro_pr": 0.476565,
+            "f1_mean_of_per_class_f1": 0.467711
+          },
+          "per_class": {
+            "Person": {
+              "precision": 0.391335,
+              "recall": 0.392493,
+              "f1": 0.391913,
+              "tp": 3848,
+              "fp": 5985,
+              "fn": 5956
+            },
+            "Human face": {
+              "precision": 0.425999,
+              "recall": 0.750545,
+              "f1": 0.543509,
+              "tp": 3785,
+              "fp": 5100,
+              "fn": 1258
+            }
+          },
+          "confusion_matrix": {
+            "labels": [
+              "Person",
+              "Human face",
+              "background"
+            ],
+            "rows_predicted_columns_true": [
+              [
+                3848.0,
+                46.0,
+                5939.0
+              ],
+              [
+                35.0,
+                3785.0,
+                5065.0
+              ],
+              [
+                5921.0,
+                1212.0,
+                0.0
+              ]
+            ]
+          }
+        }
+      },
+      "performance_benchmarks": {
+        "batch_16_throughput_run": {
+          "configured_batch_size": 16,
+          "warmup_iterations": 50,
+          "total_batches_executed": 32,
+          "full_batches_count": 31,
+          "partial_final_batch": {
+            "batch_index": 31,
+            "images_in_partial_batch": 4,
+            "end_to_end_excluding_io_ms": 64.6749,
+            "per_image_excluding_io_ms": 16.1687
+          },
+          "actual_processed_images": 500,
+          "image_loading_included_in_primary_e2e": false,
+          "image_saving_included": false,
+          "total_wall_time_sec_excluding_disk_io": 2.8178,
+          "total_disk_io_time_sec": 4.4098,
+          "total_wall_time_sec_with_disk_io": 7.2276,
+          "measured_fps_excluding_disk_io": 177.442,
+          "measured_fps_with_disk_io": 69.179,
+          "full_batch_latency_ms": {
+            "note": "Computed strictly over 31 full batches of size 16.",
+            "preprocess": {
+              "mean_ms": 29.5003,
+              "p50_ms": 29.2467,
+              "p95_ms": 30.7777,
+              "min_ms": 28.164,
+              "max_ms": 37.3092
+            },
+            "inference": {
+              "mean_ms": 46.5755,
+              "p50_ms": 46.1396,
+              "p95_ms": 49.0719,
+              "min_ms": 45.2901,
+              "max_ms": 54.0123
+            },
+            "postprocess": {
+              "mean_ms": 11.2414,
+              "p50_ms": 11.31,
+              "p95_ms": 12.402,
+              "min_ms": 9.9687,
+              "max_ms": 13.0044
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 88.8114,
+              "p50_ms": 88.1694,
+              "p95_ms": 94.3744,
+              "min_ms": 86.3622,
+              "max_ms": 97.7741
+            },
+            "disk_image_load_io": {
+              "mean_ms": 140.8944,
+              "p50_ms": 135.8587,
+              "p95_ms": 167.2579,
+              "min_ms": 110.4576,
+              "max_ms": 172.2663
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 229.7058,
+              "p50_ms": 225.2063,
+              "p95_ms": 257.602,
+              "min_ms": 206.7544,
+              "max_ms": 270.0403
+            }
+          },
+          "amortized_per_image_ms": {
+            "note": "mean_ms is total_time_ms / 500 actual processed images (consistent with measured_fps).",
+            "preprocess": {
+              "mean_ms": 1.845,
+              "p50_ms": 1.8279,
+              "p95_ms": 1.927,
+              "min_ms": 1.7602,
+              "max_ms": 2.3318
+            },
+            "inference": {
+              "mean_ms": 2.9922,
+              "p50_ms": 2.8837,
+              "p95_ms": 3.0695,
+              "min_ms": 2.8306,
+              "max_ms": 13.0655
+            },
+            "postprocess": {
+              "mean_ms": 0.7028,
+              "p50_ms": 0.7069,
+              "p95_ms": 0.7811,
+              "min_ms": 0.623,
+              "max_ms": 0.8128
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 5.6357,
+              "p50_ms": 5.5106,
+              "p95_ms": 6.0562,
+              "min_ms": 5.3976,
+              "max_ms": 16.1687
+            },
+            "disk_image_load_io": {
+              "mean_ms": 8.8195,
+              "p50_ms": 8.4912,
+              "p95_ms": 10.4663,
+              "min_ms": 6.9036,
+              "max_ms": 10.7666
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 14.4552,
+              "p50_ms": 14.0754,
+              "p95_ms": 16.1815,
+              "min_ms": 12.9222,
+              "max_ms": 26.6772
+            }
+          },
+          "power_and_energy": {
+            "available": true,
+            "scope": "GPU-only (NVML)",
+            "measurement_window": "compute_only_excluding_disk_io (preprocess + inference + postprocess; images preloaded in RAM)",
+            "compute_window_duration_sec": 2.8178,
+            "nvml_sampled_span_sec": 2.8014,
+            "avg_power_watts": 65.525,
+            "min_power_watts": 36.531,
+            "max_power_watts": 95.372,
+            "total_energy_joules_avg_power_x_compute_time": 184.639,
+            "total_energy_joules_trapezoidal_integration": 181.034,
+            "energy_per_image_joules": 0.3693,
+            "energy_per_image_joules_trapezoidal": 0.3621,
+            "num_power_samples": 105
+          }
+        },
+        "batch_1_latency_run": {
+          "configured_batch_size": 1,
+          "warmup_iterations": 50,
+          "total_batches_executed": 500,
+          "full_batches_count": 500,
+          "partial_final_batch": null,
+          "actual_processed_images": 500,
+          "image_loading_included_in_primary_e2e": false,
+          "image_saving_included": false,
+          "total_wall_time_sec_excluding_disk_io": 7.755,
+          "total_disk_io_time_sec": 3.7833,
+          "total_wall_time_sec_with_disk_io": 11.5383,
+          "measured_fps_excluding_disk_io": 64.474,
+          "measured_fps_with_disk_io": 43.334,
+          "full_batch_latency_ms": {
+            "note": "Computed strictly over 500 full batches of size 1.",
+            "preprocess": {
+              "mean_ms": 1.9017,
+              "p50_ms": 1.8569,
+              "p95_ms": 2.4047,
+              "min_ms": 0.9697,
+              "max_ms": 2.9841
+            },
+            "inference": {
+              "mean_ms": 11.5503,
+              "p50_ms": 9.4054,
+              "p95_ms": 12.3215,
+              "min_ms": 7.9614,
+              "max_ms": 58.7043
+            },
+            "postprocess": {
+              "mean_ms": 1.1307,
+              "p50_ms": 1.073,
+              "p95_ms": 1.8182,
+              "min_ms": 0.4733,
+              "max_ms": 2.1437
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 15.51,
+              "p50_ms": 13.4748,
+              "p95_ms": 16.471,
+              "min_ms": 11.1745,
+              "max_ms": 62.117
+            },
+            "disk_image_load_io": {
+              "mean_ms": 7.5666,
+              "p50_ms": 6.9816,
+              "p95_ms": 13.2855,
+              "min_ms": 3.3916,
+              "max_ms": 19.807
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 23.0767,
+              "p50_ms": 20.7252,
+              "p95_ms": 30.3421,
+              "min_ms": 15.9267,
+              "max_ms": 73.6476
+            }
+          },
+          "amortized_per_image_ms": {
+            "note": "mean_ms is total_time_ms / 500 actual processed images (consistent with measured_fps).",
+            "preprocess": {
+              "mean_ms": 1.9017,
+              "p50_ms": 1.8569,
+              "p95_ms": 2.4047,
+              "min_ms": 0.9697,
+              "max_ms": 2.9841
+            },
+            "inference": {
+              "mean_ms": 11.5503,
+              "p50_ms": 9.4054,
+              "p95_ms": 12.3215,
+              "min_ms": 7.9614,
+              "max_ms": 58.7043
+            },
+            "postprocess": {
+              "mean_ms": 1.1307,
+              "p50_ms": 1.073,
+              "p95_ms": 1.8182,
+              "min_ms": 0.4733,
+              "max_ms": 2.1437
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 15.51,
+              "p50_ms": 13.4748,
+              "p95_ms": 16.471,
+              "min_ms": 11.1745,
+              "max_ms": 62.117
+            },
+            "disk_image_load_io": {
+              "mean_ms": 7.5666,
+              "p50_ms": 6.9816,
+              "p95_ms": 13.2855,
+              "min_ms": 3.3916,
+              "max_ms": 19.807
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 23.0767,
+              "p50_ms": 20.7252,
+              "p95_ms": 30.3421,
+              "min_ms": 15.9267,
+              "max_ms": 73.6476
+            }
+          },
+          "power_and_energy": {
+            "available": true,
+            "scope": "GPU-only (NVML)",
+            "measurement_window": "compute_only_excluding_disk_io (preprocess + inference + postprocess; images preloaded in RAM)",
+            "compute_window_duration_sec": 7.755,
+            "nvml_sampled_span_sec": 7.745,
+            "avg_power_watts": 37.551,
+            "min_power_watts": 31.846,
+            "max_power_watts": 45.632,
+            "total_energy_joules_avg_power_x_compute_time": 291.2062,
+            "total_energy_joules_trapezoidal_integration": 290.6987,
+            "energy_per_image_joules": 0.5824,
+            "energy_per_image_joules_trapezoidal": 0.5814,
+            "num_power_samples": 332
+          }
+        }
+      }
+    },
+    {
+      "model_scale": "s",
+      "source_report": {
+        "report": "yolo26s_fp32_kria_comparison_metrics.json",
+        "sha256": "66e740d4ff25eef2da5a08b6096004a83a0d4147e048ca448d63b12357068c99"
+      },
+      "checkpoint": {
+        "sha256": "d0197de9201200278e7a423f4a8e6c697cd4dc73b5faeb8a112cc764d9f29e47"
+      },
+      "execution_metadata": {
+        "gpu_model": "Tesla T4",
+        "num_gpus_visible": 2,
+        "device_used": 0,
+        "inference_dtype": "float32",
+        "amp_enabled": false,
+        "half_precision": false,
+        "pytorch_version": "2.11.0+cu128",
+        "cuda_version": "12.8",
+        "cudnn_version": 91900,
+        "ultralytics_version": "8.4.150",
+        "warmup_runs": 50,
+        "timed_runs_images": 500
+      },
+      "explicit_evaluation_settings": {
+        "operating_point_confidence": 0.3,
+        "map_baseline_confidence": 0.001,
+        "evaluation_matching_iou_threshold": 0.5,
+        "nms_iou_threshold": 0.7,
+        "nms_iou_active_in_execution": true,
+        "max_det": 300,
+        "nms_enabled": true,
+        "end2end_nms_free_head": false,
+        "decoding_strategy": "one2many_anchor_decode_plus_nms",
+        "head_verification_details": {
+          "head_class": "Detect",
+          "reg_max_dfl_bins": 1,
+          "dfl_free": true,
+          "unfused_checkpoint_had_one2one_branch": true,
+          "unfused_checkpoint_had_one2many_branch": true,
+          "end2end_nms_free_head": false,
+          "nms_enabled": true,
+          "decoding_strategy": "one2many_anchor_decode_plus_nms"
+        },
+        "imgsz": 640,
+        "throughput_batch_size": 16,
+        "latency_batch_size": 1
+      },
+      "dataset": {
+        "name": "Open Images V7 test split",
+        "class_names": [
+          "Person",
+          "Human face"
+        ],
+        "num_images": 5000
+      },
+      "accuracy_standard_map_untruncated_conf_0001": {
+        "description": "Standard mAP evaluation with conf=0.001 so the Precision-Recall curve is not truncated.",
+        "overall": {
+          "metrics/precision(B)": 0.448489304325339,
+          "metrics/recall(B)": 0.5720575996248664,
+          "metrics/mAP50(B)": 0.46671014836448016,
+          "metrics/mAP50-95(B)": 0.331097839522967,
+          "fitness": 0.331097839522967
+        }
+      },
+      "accuracy_operating_point_conf_030": {
+        "description": "Precision, Recall, F1 and Confusion Matrix evaluated strictly at confidence=0.3 and matching IoU=0.5 (matching Kria evaluation criteria).",
+        "from_confusion_matrix_at_conf_030_iou_050": {
+          "evaluated_confidence_threshold": 0.3,
+          "matching_iou_threshold": 0.5,
+          "macro_average": {
+            "precision": 0.401247,
+            "recall": 0.628652,
+            "f1": 0.489844,
+            "f1_harmonic_of_macro_pr": 0.489844,
+            "f1_mean_of_per_class_f1": 0.482899
+          },
+          "per_class": {
+            "Person": {
+              "precision": 0.395848,
+              "recall": 0.468686,
+              "f1": 0.429199,
+              "tp": 4595,
+              "fp": 7013,
+              "fn": 5209
+            },
+            "Human face": {
+              "precision": 0.406646,
+              "recall": 0.788618,
+              "f1": 0.536599,
+              "tp": 3977,
+              "fp": 5803,
+              "fn": 1066
+            }
+          },
+          "confusion_matrix": {
+            "labels": [
+              "Person",
+              "Human face",
+              "background"
+            ],
+            "rows_predicted_columns_true": [
+              [
+                4595.0,
+                42.0,
+                6971.0
+              ],
+              [
+                29.0,
+                3977.0,
+                5774.0
+              ],
+              [
+                5180.0,
+                1024.0,
+                0.0
+              ]
+            ]
+          }
+        }
+      },
+      "performance_benchmarks": {
+        "batch_16_throughput_run": {
+          "configured_batch_size": 16,
+          "warmup_iterations": 50,
+          "total_batches_executed": 32,
+          "full_batches_count": 31,
+          "partial_final_batch": {
+            "batch_index": 31,
+            "images_in_partial_batch": 4,
+            "end_to_end_excluding_io_ms": 44.5335,
+            "per_image_excluding_io_ms": 11.1334
+          },
+          "actual_processed_images": 500,
+          "image_loading_included_in_primary_e2e": false,
+          "image_saving_included": false,
+          "total_wall_time_sec_excluding_disk_io": 5.4004,
+          "total_disk_io_time_sec": 4.1107,
+          "total_wall_time_sec_with_disk_io": 9.511,
+          "measured_fps_excluding_disk_io": 92.586,
+          "measured_fps_with_disk_io": 52.57,
+          "full_batch_latency_ms": {
+            "note": "Computed strictly over 31 full batches of size 16.",
+            "preprocess": {
+              "mean_ms": 28.8573,
+              "p50_ms": 28.8542,
+              "p95_ms": 30.7486,
+              "min_ms": 27.2221,
+              "max_ms": 31.8724
+            },
+            "inference": {
+              "mean_ms": 130.6554,
+              "p50_ms": 131.215,
+              "p95_ms": 132.2543,
+              "min_ms": 127.6547,
+              "max_ms": 132.6652
+            },
+            "postprocess": {
+              "mean_ms": 11.9498,
+              "p50_ms": 11.7921,
+              "p95_ms": 12.8451,
+              "min_ms": 10.1782,
+              "max_ms": 17.53
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 172.7694,
+              "p50_ms": 172.4515,
+              "p95_ms": 176.1813,
+              "min_ms": 167.332,
+              "max_ms": 181.2732
+            },
+            "disk_image_load_io": {
+              "mean_ms": 131.2691,
+              "p50_ms": 129.5762,
+              "p95_ms": 158.468,
+              "min_ms": 103.5316,
+              "max_ms": 164.7411
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 304.0385,
+              "p50_ms": 302.0111,
+              "p95_ms": 332.3141,
+              "min_ms": 276.9475,
+              "max_ms": 346.0142
+            }
+          },
+          "amortized_per_image_ms": {
+            "note": "mean_ms is total_time_ms / 500 actual processed images (consistent with measured_fps).",
+            "preprocess": {
+              "mean_ms": 1.8078,
+              "p50_ms": 1.8034,
+              "p95_ms": 1.9698,
+              "min_ms": 1.7014,
+              "max_ms": 2.3257
+            },
+            "inference": {
+              "mean_ms": 8.1609,
+              "p50_ms": 8.2009,
+              "p95_ms": 8.2714,
+              "min_ms": 7.5376,
+              "max_ms": 8.2916
+            },
+            "postprocess": {
+              "mean_ms": 0.7481,
+              "p50_ms": 0.737,
+              "p95_ms": 0.8162,
+              "min_ms": 0.6361,
+              "max_ms": 1.0956
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 10.8008,
+              "p50_ms": 10.7782,
+              "p95_ms": 11.0829,
+              "min_ms": 10.4582,
+              "max_ms": 11.3296
+            },
+            "disk_image_load_io": {
+              "mean_ms": 8.2213,
+              "p50_ms": 8.0985,
+              "p95_ms": 10.1439,
+              "min_ms": 6.4707,
+              "max_ms": 10.33
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 19.0221,
+              "p50_ms": 18.8757,
+              "p95_ms": 21.0147,
+              "min_ms": 17.3092,
+              "max_ms": 21.6259
+            }
+          },
+          "power_and_energy": {
+            "available": true,
+            "scope": "GPU-only (NVML)",
+            "measurement_window": "compute_only_excluding_disk_io (preprocess + inference + postprocess; images preloaded in RAM)",
+            "compute_window_duration_sec": 5.4004,
+            "nvml_sampled_span_sec": 5.3994,
+            "avg_power_watts": 64.526,
+            "min_power_watts": 34.909,
+            "max_power_watts": 89.037,
+            "total_energy_joules_avg_power_x_compute_time": 348.4679,
+            "total_energy_joules_trapezoidal_integration": 347.9803,
+            "energy_per_image_joules": 0.6969,
+            "energy_per_image_joules_trapezoidal": 0.696,
+            "num_power_samples": 218
+          }
+        },
+        "batch_1_latency_run": {
+          "configured_batch_size": 1,
+          "warmup_iterations": 50,
+          "total_batches_executed": 500,
+          "full_batches_count": 500,
+          "partial_final_batch": null,
+          "actual_processed_images": 500,
+          "image_loading_included_in_primary_e2e": false,
+          "image_saving_included": false,
+          "total_wall_time_sec_excluding_disk_io": 6.6483,
+          "total_disk_io_time_sec": 3.6584,
+          "total_wall_time_sec_with_disk_io": 10.3067,
+          "measured_fps_excluding_disk_io": 75.208,
+          "measured_fps_with_disk_io": 48.512,
+          "full_batch_latency_ms": {
+            "note": "Computed strictly over 500 full batches of size 1.",
+            "preprocess": {
+              "mean_ms": 1.8622,
+              "p50_ms": 1.8113,
+              "p95_ms": 2.3997,
+              "min_ms": 1.1636,
+              "max_ms": 2.8872
+            },
+            "inference": {
+              "mean_ms": 9.4596,
+              "p50_ms": 9.236,
+              "p95_ms": 10.8293,
+              "min_ms": 8.316,
+              "max_ms": 16.7592
+            },
+            "postprocess": {
+              "mean_ms": 1.0635,
+              "p50_ms": 1.0511,
+              "p95_ms": 1.2632,
+              "min_ms": 0.4677,
+              "max_ms": 1.9995
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 13.2965,
+              "p50_ms": 13.105,
+              "p95_ms": 14.8721,
+              "min_ms": 11.6552,
+              "max_ms": 22.8197
+            },
+            "disk_image_load_io": {
+              "mean_ms": 7.3168,
+              "p50_ms": 6.6455,
+              "p95_ms": 13.097,
+              "min_ms": 3.0926,
+              "max_ms": 19.7797
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 20.6133,
+              "p50_ms": 20.049,
+              "p95_ms": 26.4953,
+              "min_ms": 16.0157,
+              "max_ms": 36.0968
+            }
+          },
+          "amortized_per_image_ms": {
+            "note": "mean_ms is total_time_ms / 500 actual processed images (consistent with measured_fps).",
+            "preprocess": {
+              "mean_ms": 1.8622,
+              "p50_ms": 1.8113,
+              "p95_ms": 2.3997,
+              "min_ms": 1.1636,
+              "max_ms": 2.8872
+            },
+            "inference": {
+              "mean_ms": 9.4596,
+              "p50_ms": 9.236,
+              "p95_ms": 10.8293,
+              "min_ms": 8.316,
+              "max_ms": 16.7592
+            },
+            "postprocess": {
+              "mean_ms": 1.0635,
+              "p50_ms": 1.0511,
+              "p95_ms": 1.2632,
+              "min_ms": 0.4677,
+              "max_ms": 1.9995
+            },
+            "end_to_end_excluding_io": {
+              "mean_ms": 13.2965,
+              "p50_ms": 13.105,
+              "p95_ms": 14.8721,
+              "min_ms": 11.6552,
+              "max_ms": 22.8197
+            },
+            "disk_image_load_io": {
+              "mean_ms": 7.3168,
+              "p50_ms": 6.6455,
+              "p95_ms": 13.097,
+              "min_ms": 3.0926,
+              "max_ms": 19.7797
+            },
+            "end_to_end_with_io": {
+              "mean_ms": 20.6133,
+              "p50_ms": 20.049,
+              "p95_ms": 26.4953,
+              "min_ms": 16.0157,
+              "max_ms": 36.0968
+            }
+          },
+          "power_and_energy": {
+            "available": true,
+            "scope": "GPU-only (NVML)",
+            "measurement_window": "compute_only_excluding_disk_io (preprocess + inference + postprocess; images preloaded in RAM)",
+            "compute_window_duration_sec": 6.6483,
+            "nvml_sampled_span_sec": 6.6454,
+            "avg_power_watts": 66.879,
+            "min_power_watts": 55.542,
+            "max_power_watts": 82.28,
+            "total_energy_joules_avg_power_x_compute_time": 444.6328,
+            "total_energy_joules_trapezoidal_integration": 444.5456,
+            "energy_per_image_joules": 0.8893,
+            "energy_per_image_joules_trapezoidal": 0.8891,
+            "num_power_samples": 281
+          }
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "GPU exports use one2many decoding plus NMS; KV260 uses raw one2one outputs and CPU top-k without NMS.",
+    "GPU accuracy uses Ultralytics evaluation; KV260 accuracy uses the repository evaluator.",
+    "Accuracy covers 5000 images, while each performance benchmark times 500 images after 50 warmups.",
+    "Power is GPU-only NVML over a compute-only window excluding disk I/O, not SOM-total, host-system or wall-socket power.",
+    "JSON exports do not independently prove CUDA synchronization or raw NVML sample alignment.",
+    "No isolated quantization loss, cross-platform speedup, energy-efficiency ratio or Fast Finetune improvement is established."
+  ]
+}

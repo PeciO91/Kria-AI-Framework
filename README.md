@@ -1,202 +1,158 @@
-# Kria Vitis AI Experimental Deployment Platform
+# Kria AI Framework
 
-This repository deploys PyTorch image-classification and YOLOv26 models to the AMD/Xilinx Kria KV260 with Vitis AI 3.5.
+*PyTorch-to-KV260 deployment pipeline for image classification, YOLOv26 detection, and instance segmentation using Vitis AI 3.5.*
 
-```text
-prepared PyTorch model
-  -> Inspector
-  -> optional family-specific pruning/fine-tuning
-  -> INT8 calibration and XMODEL export
-  -> Vitis AI compiler
-  -> manual board deployment
-  -> KV260 benchmark
+Deploying a PyTorch vision model on the Xilinx Kria KV260 requires adapting the graph to what the DPU supports, quantizing to INT8, compiling to an XMODEL, and driving board-side code that keeps CPU preprocessing, DPU submission, and post-processing aligned. This repository is an experimental systems framework that orchestrates that path end to end — from model inspection through measured on-board inference — for a specific, documented set of model families.
+
+The project is organized around model families that own their task semantics (models, data, losses, post-processing) and a shared layer that owns Vitis AI stages, artifacts, and board runtime. Its current evidence base is a completed 5,000-image KV260 experiment on a two-class YOLO26n detector, reported below with its methodology and caveats.
+
+[Architecture](docs/architecture.md) · [Experiments & Results](docs/experiments.md) · [Quick Start](#quick-start) · [Dataset Guide](DATASET_PREPARATION.md)
+
+## Engineering Contributions
+
+- **Shared deployment orchestration**: `python -m kria_ai` routes classification, detection, and segmentation through one consistent pipeline — inspect, optional optimize, quantize, compile, board benchmark — built on Vitis AI 3.5.
+- **Family/task ownership**: each family module builds its own models, datasets, label parsing, and post-processing; `kria_ai/common/` supplies only the task-agnostic Vitis adapters, canonical artifact layout, board runtime, input quantization, power, and profiling.
+- **Explicit contracts**: typed frozen-dataclass configs centralize model heads, class order, thresholds, and preprocessing metadata; YOLO head/output validation rejects incompatible checkpoints rather than decoding with wrong metadata.
+- **DPU graph integration**: YOLO graphs are exported so the DPU emits raw one2one tensors; anchor-free decode, top-k selection, and mask assembly stay on the ARM CPU. For the FaceHuman detector, the project adapts the graph for the DPUCZDX8G with a LeakyReLU/ReLU split policy and a weight-equivalent C3k2 channel-split rewrite.
+- **Bounded threaded execution with profiling**: board benchmarks use producer/consumer pipelines within the KV260's 1–4 runner limit and emit per-stage timing plus SOM power/energy reports.
+
+Model architectures come from Ultralytics and torchvision; quantization, compilation, and the XIR/VART runtime come from AMD Vitis AI 3.5. The contribution here is the integration layer and its measurement methodology, not those upstream tools.
+
+## Deployment Architecture
+
+```mermaid
+flowchart TB
+    subgraph HOST["Host (Vitis AI 3.5 PyTorch environment)"]
+        CKPT["Local PyTorch checkpoint + family configuration"] --> PREP["Task/model preparation"]
+        PREP --> INSP["Inspector"]
+        INSP --> OPT["Optional experimental pruning / fine-tuning"]
+        INSP --> CAL["INT8 calibration"]
+        OPT -->|"explicit checkpoint handoff"| CAL
+        CAL --> TEST["Test-mode XMODEL export"]
+        TEST --> COMP["Vitis AI compiler"]
+    end
+    COMP -->|"manual transfer: kria_ai package, XMODEL, images/labels"| BOARD
+    subgraph BOARD["KV260 (CPU + DPU)"]
+        LOAD["CPU: image load, task preprocessing, quantized input"] --> DPU["VART DPU execution"]
+        DPU --> POST["CPU: decode, top-k, masks, classification"]
+        POST --> OUT["Predictions, accuracy, timing/power reports"]
+    end
 ```
 
-The code is organized by model family rather than a universal task abstraction.
+In prose: on the host, a local checkpoint and family configuration are prepared, inspected, optionally optimized (experimental; the result must be handed off explicitly — it is not selected automatically), calibrated to INT8, exported in test mode, and compiled. The compiled XMODEL, the `kria_ai` package, and test data are copied to the KV260 manually. On the board, the ARM CPU loads and preprocesses images, submits work to the DPU through VART, and performs decode/top-k/mask/classify post-processing, writing prediction, accuracy, and timing/power reports. There is no automatic optimization feedback loop.
 
-## Supported scope
+Details: [docs/architecture.md](docs/architecture.md).
 
-| Family | Models/tasks | Status |
+## Supported Scope
+
+| Task / model CLI key | Dataset / input | Public status |
 |---|---|---|
-| Classification | ResNet18/50, MobileNetV2, MobileNetV3-Large | Deployment path migrated; hardware parity validation required |
-| YOLOv26 detection | YOLOv26s COCO-80 plus a YOLO26n 2-class architecture-only framework test, one2one anchor-free output | Deployment path migrated; hardware parity validation required |
-| YOLOv26 instance segmentation | YOLOv26n-Seg, COCO-80, CPU mask assembly | Deployment path migrated; hardware parity validation required |
-| Optimizer/pruning | Family-specific Vitis iterative and one-step flows | Experimental; run only in Vitis AI Docker |
+| `yolov26n_FaceHuman` (detection) | `openimagesv7`, 2 classes, 640x640 | Hardware-demonstrated reference configuration; one measured INT8 Fast Finetune artifact — not blanket production stability. |
+| `resnet18`, `resnet50`, `mobilenet_v2`, `mobilenet_v3` (classification) | `intel_images`, 6 classes, 224x224 | Implemented deployment path; comparative hardware validation/results not supplied. |
+| `yolov26s` (detection) | `coco`, 80 classes, 640x640 | Implemented; hardware validation pending and dataset-path caveat documented in the detection guide. |
+| `yolov26n_seg` (instance segmentation) | `coco`, 80 classes, 640x640 | Experimental/WIP; CPU mask assembly implemented, validated benchmark absent. |
+| Pruning / YOLO Fast Finetune | Family-specific | Experimental; one measured Fast Finetune artifact does not validate every model or optimizer path. |
 
-YOLOv5 and semantic segmentation are not part of the current architecture.
+YOLOv5 and semantic segmentation are outside the current architecture.
 
-## Architecture
+## Measured KV260 Results
 
-```text
-kria_ai/
-├── common/
-│   ├── artifacts.py
-│   ├── checkpoints.py
-│   ├── model_metrics.py
-│   ├── vitis/
-│   │   ├── inspector.py
-│   │   ├── quantizer.py
-│   │   └── compiler.py
-│   └── board/
-│       ├── config.py
-│       ├── runtime.py
-│       ├── input_quantization.py
-│       ├── power.py
-│       └── profiling.py
-├── classification/
-│   ├── config.py
-│   ├── models.py
-│   ├── data.py
-│   ├── preprocess.py
-│   ├── evaluate.py
-│   ├── optimize.py
-│   ├── quantize.py
-│   └── benchmark.py
-└── yolov26/
-    ├── models.py
-    ├── data.py
-    ├── preprocess.py
-    ├── export.py
-    ├── decode.py
-    ├── quantize.py
-    ├── detection/
-    └── segmentation/
-```
+Experiment `full_test_20261021T092551Z_DPXti26q` (2026-10-21): INT8 Fast Finetune `yolov26n_FaceHuman` XMODEL on a KV260 (configured DPU `DPUCZDX8G_ISA1_B4096` at 300 MHz), 5,000 test images at 640x640, ordered classes Person / Human face, 14,847 ground-truth boxes (9,804 / 5,043).
 
-`common` never builds torchvision/Ultralytics models, parses labels, creates task losses, letterboxes images, decodes boxes, or assembles masks. Family modules prepare those objects and pass them to the small common Vitis/runtime APIs.
+**Performance** (confidence threshold 0.3, queue size 40, accuracy/drawing/saving disabled, profiling enabled):
 
-The root `model_config.py`, `dataset_config.py`, `board_config.py`, and files under `scripts/` are temporary compatibility adapters.
+| DPU runners / producers | Application FPS | Mean VART submit/wait (ms/image) | SOM-total power (W) | Energy (mJ/image) |
+|---|---:|---:|---:|---:|
+| 1 / 1 | 21.69 | 12.25 | 6.62 | 305.19 |
+| 2 / 2 | 35.83 | 14.08 | 6.98 | 194.69 |
 
-## Host commands
+**Accuracy** (same 5,000 images; operating-point and AP evaluations use different confidence floors):
 
-Run commands from the repository root. Inspection, quantization, optimization, and compilation require the Vitis AI 3.5 PyTorch Docker environment.
+| Evaluation | Confidence floor | Precision (%) | Recall (%) | F1 (%) | mAP50 (%) | mAP50:95 (%) |
+|---|---:|---:|---:|---:|---:|---:|
+| Operating point | 0.3 | 46.62 | 32.63 | 38.39 | -- | -- |
+| AP evaluation | 0.001 | -- | -- | -- | 38.79 | 25.99 |
 
-### Classification
+`--` means intentionally not shown in this table, not zero — the full metrics (including the confidence-0.3 AP) are retained in the evidence file; each evaluation uses the confidence floor that defines it.
 
-```bash
-python -m kria_ai classification evaluate --model resnet18 --dataset intel_images --subset-len 32
-python -m kria_ai classification inspect --model resnet18
-python -m kria_ai classification quantize --model resnet18 --dataset intel_images --mode calib --subset-len 100
-python -m kria_ai classification quantize --model resnet18 --dataset intel_images --mode test
-python -m kria_ai classification compile --model resnet18
-```
+Performance source runs: `performance_t1_p1_conf030` and `performance_t2_p2_conf030` — 5,000 DPU jobs each, runtime power sampling, no warmup exclusion.
 
-### YOLOv26 detection
+**Caveats.**
+
+- Application FPS includes image loading, worker startup, and pipeline drain, but excludes model/OpenCV initialization.
+- VART latency is mean `execute_async` + wait — not end-to-end latency, pure DPU kernel time, or reciprocal throughput.
+- Power is SOM-total (not carrier-board/wall power and not DPU-only); energy/image is sampled average power divided by application FPS.
+- Single sequential passes only — no repeated-run means or confidence intervals; caches and thermal conditions were not reset and thermal telemetry is absent.
+- Accuracy comes from a custom class-aware greedy evaluator (IoU 0.5 matching for P/R; 101-recall-level AP at IoU 0.50:0.05:0.95; F1 = harmonic mean of macro P/R) — not the official COCO or Ultralytics evaluator.
+- Profiling stages overlap across threads, so `wall_pct` can exceed 100% and is not hardware utilization.
+
+Methodology and evidence: [docs/experiments.md](docs/experiments.md). Frozen evidence excerpts: [KV260 evidence](docs/evidence/kv260-facehuman-2026-10-21.json), [T4 context](docs/evidence/t4-facehuman-context.json).
+
+## Quick Start
+
+Prerequisites:
+
+- Working directory is the repository root.
+- Host stages run inside the Vitis AI 3.5 PyTorch environment.
+- A compatible Ultralytics source checkout at `models/ultralytics-main` (user-supplied; no public download recipe is provided).
+- A trained two-class checkpoint; the configured default is `models/yolov26n_2classes.pt`, and `--checkpoint` may be supplied consistently to inspect and both quantize stages.
+- Calibration images at `data/openimagesv7/train/images` — YOLO calibration and Fast Finetune are image-only and do not read labels. Labeled evaluation dataset paths are listed in the [dataset guide](DATASET_PREPARATION.md).
+- A separately provisioned KV260 with compatible DPU firmware plus the XIR/VART runtime, NumPy, and OpenCV.
+
+This repository has no independently verified packaging or environment lock: there is no `pip install`, model download, or universal container command.
+
+A small host workflow for the measured model (an example workflow that has been parser/static-checked — local asset gaps mean it was not executed end-to-end here, and it is not an exact reconstruction of the historical calibration recipe):
 
 ```bash
-python -m kria_ai yolov26 detection inspect --model yolov26s
-python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --mode calib --subset-len 100
-python -m kria_ai yolov26 detection quantize --model yolov26s --dataset coco --mode test
-python -m kria_ai yolov26 detection compile --model yolov26s
+python -m kria_ai yolov26 detection inspect \
+  --model yolov26n_FaceHuman --build-root build_fast_ft
+python -m kria_ai yolov26 detection quantize \
+  --model yolov26n_FaceHuman --dataset openimagesv7 --mode calib \
+  --subset-len 100 --batch-size 4 --seed 42 --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection quantize \
+  --model yolov26n_FaceHuman --dataset openimagesv7 --mode test \
+  --fast-ft --build-root build_fast_ft
+python -m kria_ai yolov26 detection compile \
+  --model yolov26n_FaceHuman --build-root build_fast_ft
 ```
 
-The `yolov26n_FaceHuman` model uses a 2-class `Person`/`Human face` head and the OpenImagesV7 dataset. Its loader enforces LeakyReLU(13/128) for normal Conv and ReLU for DWConv because DPUCZDX8G does not support fused depthwise LeakyReLU. Its loader also replaces C3k2's runtime channel chunk with two weight-equivalent Conv branches to avoid `nndct_strided_slice`.
+`--fast-ft` is experimental and must appear in both the calibration and test/export commands when used. Keep one `--build-root` per pipeline run: stages write artifacts, so choose a fresh build root to preserve an existing run. Quantizer `test` mode performs a one-image forward/export — it is not a test-set accuracy run.
+
+Transfer to the board is manual: copy the `kria_ai/` package, the compiled `yolov26n_facehuman_kria.xmodel` (from `build_fast_ft/yolov26n_facehuman/compiled/`), and test images/labels. Board inference needs no PyTorch checkpoints or Ultralytics source. From a directory containing the package and XMODEL, with data at `datasets/openimagesv7/fpga_test_images/{images/test,labels/test}`:
 
 ```bash
-python -m kria_ai yolov26 detection inspect --model yolov26n_FaceHuman
-python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode calib --subset-len 100
-python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode test
-python -m kria_ai yolov26 detection compile --model yolov26n_FaceHuman
+python3 -m kria_ai yolov26 detection benchmark \
+  --model yolov26n_FaceHuman --dataset openimagesv7 \
+  --xmodel yolov26n_facehuman_kria.xmodel \
+  --dataset-root datasets/openimagesv7/fpga_test_images/images/test \
+  --threads 2 --producers 2 --queue-size 40 --confidence-threshold 0.3 \
+  --no-draw --no-save --profile --profile-json \
+  --output-report reports/facehuman_performance_t2_p2.txt
 ```
 
-Fast Finetune can be exercised with a separate build root so baseline artifacts under `build/` are preserved:
+`--dataset-root` points at one flat directory of images — it is not scanned recursively — so pass the `images/test` path explicitly. Do not confuse the three "evaluation" surfaces: host-side `evaluate` reports loss (not mAP), quantizer `test` mode performs a one-image forward/export, and board `--accuracy` is the mAP path.
+
+For accuracy evaluation (`--accuracy --labels-dir ...`), the 1/1 variant, and classification/segmentation commands, see the [detection guide](scripts/detection/README.md), [classification guide](scripts/classification/README.md), and [segmentation guide](scripts/segmentation/README.md).
+
+## Reproducibility And Documentation
+
+- [docs/architecture.md](docs/architecture.md) — module map, CPU/DPU contracts, artifact layout, deployment boundary.
+- [docs/experiments.md](docs/experiments.md) — measurement definitions, evidence provenance, T4 GPU context, validation matrix, planned experiments.
+- [DATASET_PREPARATION.md](DATASET_PREPARATION.md) — dataset registries, label formats, board layout, known config caveats.
+- Task guides: [classification](scripts/classification/README.md), [detection](scripts/detection/README.md), [segmentation](scripts/segmentation/README.md).
+
+Dependency-light host validation (does not exercise Vitis AI stages or hardware):
 
 ```bash
-python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode calib --fast-ft --build-root build_fast_ft
-python -m kria_ai yolov26 detection quantize --model yolov26n_FaceHuman --dataset openimagesv7 --mode test --fast-ft --build-root build_fast_ft
-python -m kria_ai yolov26 detection compile --model yolov26n_FaceHuman --build-root build_fast_ft
-```
-
-### YOLOv26 instance segmentation
-
-```bash
-python -m kria_ai yolov26 segmentation inspect --model yolov26n_seg
-python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset coco --mode calib --subset-len 100
-python -m kria_ai yolov26 segmentation quantize --model yolov26n_seg --dataset coco --mode test
-python -m kria_ai yolov26 segmentation compile --model yolov26n_seg
-```
-
-YOLOv26 model loading validates the checkpoint head against the configured class/head metadata exactly. The COCO model remains COCO-80 while `yolov26n_FaceHuman` is nc=2; a checkpoint whose head does not match its configured nc is rejected rather than decoded with incorrect metadata.
-
-AdaQuant is available for classification. YOLOv26 Fast Finetune is experimental and uses an image-only forward callback over the patched raw-output graph.
-
-## Optimizer
-
-Optimization is family-owned and emits an explicit checkpoint plus manifest under `build/<model-id>/optimizer_report/`.
-
-```bash
-python -m kria_ai classification optimize --model resnet18 --dataset intel_images --method iterative --mode all --ratio 0.2
-python -m kria_ai yolov26 detection optimize --model yolov26s --dataset coco --method one_step --mode all --ratio 0.2
-python -m kria_ai yolov26 segmentation optimize --model yolov26n_seg --dataset coco --method one_step --mode all --ratio 0.2
-```
-
-Pass the result explicitly to a later stage:
-
-```bash
-python -m kria_ai classification quantize --model resnet18 --dataset intel_images --checkpoint build/resnet18/optimizer_report/resnet18_one_step_r0.2_optimized.pt --mode calib
-```
-
-Sparse optimizer checkpoints are rejected by quantization; use the materialized slim checkpoint.
-
-## Generated artifacts
-
-Canonical artifacts use model IDs:
-
-```text
-build/<model-id>/inspector_report/
-build/<model-id>/optimizer_report/
-build/<model-id>/quantize_result/<model-id>_int.xmodel
-build/<model-id>/compiled/<model-id>_kria.xmodel
-```
-
-Do not hand-edit generated artifacts, checkpoints, datasets, or XMODEL files.
-
-## KV260 benchmark
-
-Transfer automation is intentionally deferred. Manually copy the `kria_ai` package, required XMODEL, and dataset to the board, then run:
-
-```bash
-python3 -m kria_ai classification benchmark --model resnet18 --dataset intel_images --xmodel resnet18_kria.xmodel --threads 2 --profile
-python3 -m kria_ai yolov26 detection benchmark --model yolov26s --dataset coco --xmodel yolov26s_kria.xmodel --threads 2 --profile
-python3 -m kria_ai yolov26 segmentation benchmark --model yolov26n_seg --dataset coco --xmodel yolov26n_seg_kria.xmodel --threads 2 --profile
-```
-
-Detection supports `--accuracy --labels-dir ...` for class-aware precision, recall, mAP@0.5, and mAP@0.5:0.95. Accuracy mode defaults to a 0.001 confidence threshold so AP is evaluated across the score curve; override it with `--confidence-threshold` when needed.
-
-Detection profiling supports `--profile` (aggregate and per-worker tables) and `--profile-json` (a sibling `<report-stem>_profile.json` file). To isolate inference pipeline costs from rendering, saving and accuracy evaluation, add these flags to the detection command and omit `--accuracy`:
-
-```text
---confidence-threshold 0.3 --no-draw --no-save --profile --profile-json
-```
-
-The profile separates image read/JPEG decode, RGB conversion plus preprocessing, input/output queue waits, runner setup, CPU decoding, top-k, coordinate scaling, drawing, and image writing. The existing `preprocess` stage now excludes image reading. JSON retains the original summary fields and adds per-worker stages, producer/queue/output settings, board and artifact paths, and SOM power/energy with availability and idle-fallback information.
-
-Interpret timing rows carefully: parent/child stages overlap, totals accumulate elapsed time across threads, and `wall_pct` may exceed 100%; it is not CPU/DPU utilization or an exclusive bottleneck percentage. Decoder threshold/dequantization/scoring/box samples are per pyramid level, not per image. Application FPS includes worker startup, image loading, enabled accuracy/drawing/saving and pipeline drain; model loading and main-thread OpenCV initialization are excluded and no warmup images are discarded. `runner_setup` is reported separately. The `dpu` stage measures VART submit/wait, not pure hardware compute or separate DMA/cache synchronization. Queue-wait counts include end-of-stream sentinels; per-image totals do not.
-
-Detection initializes and checks OpenCV on the main thread before starting workers. Producer, DPU-consumer and writer exceptions cancel the pipeline and propagate to a nonzero CLI exit; no success report is written after a worker failure. A run that processes zero images is also an error.
-
-Segmentation supports `--accuracy --labels-dir ...` for the current mask mAP@0.5 metric and `--video ... --threads 1 --producers 1` for ordered file-video inference.
-
-Board code imports XIR/VART lazily, validates the KV260 1-4 runner limit, and reports unavailable power/compute metrics without crashing.
-
-## Configuration
-
-- `kria_ai/classification/config.py`: classification models and datasets.
-- `kria_ai/yolov26/detection/config.py`: YOLOv26 detection assets and thresholds.
-- `kria_ai/yolov26/segmentation/config.py`: YOLOv26 segmentation assets and mask metadata.
-- `kria_ai/common/board/config.py`: KV260/DPU metadata.
-- `configs/yolov26/`: DPU-friendly Ultralytics architectures.
-
-Static registries use frozen Python dataclasses. Architecture YAML remains limited to Ultralytics model construction.
-
-## Validation
-
-Dependency-light checks:
-
-```bash
-python -m unittest discover -s tests -v
-python -m compileall -q kria_ai tests
+python -B -m unittest discover -s tests -p test_family_configs.py -v
+python -B -m unittest discover -s tests -p test_benchmark_cli.py -v
 python -m kria_ai --help
 ```
 
-Full behavior validation requires the Vitis AI Docker environment and KV260. Long pruning, compilation, transfer, and hardware commands should be run explicitly, not as part of a normal unit-test pass.
+These are the narrow contract checks; broader suite commands and their dependency requirements are listed in [docs/architecture.md](docs/architecture.md).
+
+Full end-to-end validation requires the Vitis AI environment and a KV260; the recorded results above are historical board measurements, not a fresh rerun performed for this documentation.
+
+**Limitations and next steps.** Current limits: the measured result covers one model, one dataset, one quantization path, and single-pass runs, with operating-point and AP evaluations reported separately. Next research steps include controlled FP32/INT8 comparisons with the same head and evaluator, repeated thermal- and cache-aware trials, baseline-vs-Fast-Finetune ablation, pruning trade-off studies, and cross-task hardware validation. See [docs/experiments.md](docs/experiments.md#planned-experiments) for the full list.
+
+**Acknowledgements.** Built on [Ultralytics](https://github.com/ultralytics/ultralytics) model implementations, torchvision models, and the AMD Vitis AI 3.5 toolchain (PyTorch quantizer, compiler, XIR/VART runtime).

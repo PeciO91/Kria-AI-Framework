@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "experiment_id": "full_test_20261021T092551Z_DPXti26q",
+  "finished_utc": "2026-10-21T09:43:13.291860+00:00",
+  "curation_notes": [
+    "Curated excerpt, not an unmodified raw export. Numerical values retain source precision.",
+    "Source reports remain local; hashes bind this excerpt to the audited files but are not a public archive or a signature.",
+    "Omitted absolute machine paths, hostname, per-image filenames, private command paths and resource dumps.",
+    "No remote-to-local export checksum audit was performed."
+  ],
+  "source_reports": [
+    {
+      "report": "summary.json",
+      "sha256": "953472e26a108e033e4207f555513d9da41c030fc7b1310e8f21e10fd4b9fd5d"
+    },
+    {
+      "report": "manifest.json",
+      "sha256": "22227c0d12899d911fd011576674b382e1aeedd1e311755d6f39a1d3c2db8404"
+    },
+    {
+      "report": "performance_t1_p1_conf030/report_profile.json",
+      "sha256": "746a97ca8beeaa0cb607ca8d1e07ed5d86bd5e779a3aaeb8f04f111ca9b47106"
+    },
+    {
+      "report": "performance_t2_p2_conf030/report_profile.json",
+      "sha256": "56aaa7ae9d69439fce9769ceb52cb5a9390d2b30da20dce984030aecad5dc4b3"
+    },
+    {
+      "report": "accuracy_conf030/report_profile.json",
+      "sha256": "d8e7b25d40bb962746ca0fa8f810653e486b0c7d795744c74a6c7ace4b191c63"
+    },
+    {
+      "report": "accuracy_map_conf0001/report_profile.json",
+      "sha256": "098cc21ebfded9429fa829d5349380ab2b317d9a87565cddf4f415c4ad7d4fa8"
+    }
+  ],
+  "fingerprints": {
+    "package_sha256": "e9feb1b009b195ebb93c7e8a9e56cf93c8cef0cc66ff67694292d4def8483204",
+    "model_sha256": "53a2cc4cceead58a92222adbf9f1d203a48e52192dc647834e6a92ac2cbeabbd",
+    "filenames_sha256": "387f92ba0a0d705a3412664eda9f9bf82b890178aa113884af735c91c97b5c82",
+    "labels_sha256": "dde02909f7f76caac88417522577ec8a98b03e4761fc28f5c074b7d0fe82197f"
+  },
+  "model": {
+    "id": "yolov26n_facehuman",
+    "name": "YOLO26n Face Human",
+    "checkpoint_path": "models/yolov26n_2classes.pt",
+    "architecture_path": "configs/yolo26n_dpu_leaky_dwrelu.yaml",
+    "input_size": [
+      640,
+      640
+    ],
+    "num_classes": 2,
+    "reg_max": 1,
+    "strides": [
+      8,
+      16,
+      32
+    ],
+    "max_detections": 300,
+    "activation_policy": "leaky_13_128_conv_relu_dw",
+    "graph_policy": "split_c3k2_cv1",
+    "cli_key": "yolov26n_FaceHuman",
+    "precision": "INT8",
+    "artifact_variant": "Fast Finetune build",
+    "checkpoint_path_note": "Configured expected asset path, not proof of the historical checkpoint filename or contents.",
+    "calibration_note": "The full historical calibration/Fast Finetune recipe is not established by this export."
+  },
+  "dataset": {
+    "id": "openimagesv7",
+    "description": "Two-class FaceHuman test subset",
+    "classes": [
+      "Person",
+      "Human face"
+    ],
+    "num_images": 5000,
+    "ground_truths_per_class": {
+      "0": 9804,
+      "1": 5043
+    },
+    "ground_truths": 14847
+  },
+  "board": {
+    "metadata_source": "Configured board registry captured in the experiment manifest, not independent clock verification.",
+    "id": "kv260",
+    "name": "Xilinx Kria KV260",
+    "dpu_arch": "DPUCZDX8G_ISA1_B4096",
+    "dpu_frequency_mhz": 300,
+    "dpu_fingerprint": "0x101000056010407",
+    "compiler_arch_path": "/opt/vitis_ai/compiler/arch/DPUCZDX8G/KV260/arch.json",
+    "dpu_peak_gops": 2457.6,
+    "default_runners": 2,
+    "max_runners": 4,
+    "power_command": [
+      "xmutil",
+      "xlnx_platformstats",
+      "-p"
+    ]
+  },
+  "environment": {
+    "metadata_source": "Recorded board environment",
+    "kernel": "5.15.36-xilinx-v2022.2",
+    "machine": "aarch64",
+    "cpu_count": 4,
+    "python": "3.9.9 (main, Nov 15 2021, 18:05:17) \n[GCC 11.2.0]",
+    "numpy": "1.21.2",
+    "opencv": "4.5.2",
+    "opencv_num_threads": 4,
+    "thread_environment": {
+      "OMP_NUM_THREADS": null,
+      "OPENBLAS_NUM_THREADS": null,
+      "MKL_NUM_THREADS": null,
+      "NUMEXPR_NUM_THREADS": null
+    }
+  },
+  "performance": {
+    "performance_t1_p1_conf030": {
+      "threads": 1,
+      "producers": 1,
+      "active_producers": 1,
+      "queue_size": 40,
+      "images_processed": 5000,
+      "detections": 9017,
+      "class_histogram": {
+        "0": 4421,
+        "1": 4596
+      },
+      "wall_time_s": 230.56252371903975,
+      "fps": 21.686091561406265,
+      "dpu_latency_ms": 12.254046689532698,
+      "power_available": true,
+      "power_w": 6.6184593837535,
+      "power_scope": "SOM total power",
+      "power_source": "runtime_samples",
+      "power_samples": 357,
+      "energy_mj": 305.1937397300335,
+      "warmup_images": 0
+    },
+    "performance_t2_p2_conf030": {
+      "threads": 2,
+      "producers": 2,
+      "active_producers": 2,
+      "queue_size": 40,
+      "images_processed": 5000,
+      "detections": 9017,
+      "class_histogram": {
+        "0": 4421,
+        "1": 4596
+      },
+      "wall_time_s": 139.5476771260146,
+      "fps": 35.8300482170326,
+      "dpu_latency_ms": 14.081939407764002,
+      "power_available": true,
+      "power_w": 6.975851063829789,
+      "power_scope": "SOM total power",
+      "power_source": "runtime_samples",
+      "power_samples": 188,
+      "energy_mj": 194.692762386897,
+      "warmup_images": 0
+    }
+  },
+  "accuracy": {
+    "accuracy_conf030": {
+      "confidence_threshold": 0.3,
+      "metrics": {
+        "precision": 0.4661588492220746,
+        "recall": 0.32626659807661457,
+        "f1": 0.38386465860596647,
+        "map50": 0.220614924562071,
+        "map50_95": 0.16359720300939135,
+        "per_class": {
+          "0": {
+            "ground_truths": 9804,
+            "predictions": 4421,
+            "precision": 0.42818366885320064,
+            "recall": 0.19308445532435742,
+            "map50": 0.09120528200017046,
+            "map50_95": 0.0614548750479131
+          },
+          "1": {
+            "ground_truths": 5043,
+            "predictions": 4596,
+            "precision": 0.5041340295909487,
+            "recall": 0.4594487408288717,
+            "map50": 0.3500245671239715,
+            "map50_95": 0.2657395309708696
+          }
+        },
+        "iou_thresholds": [
+          0.5,
+          0.550000011920929,
+          0.6000000238418579,
+          0.6499999761581421,
+          0.699999988079071,
+          0.75,
+          0.800000011920929,
+          0.8500000238418579,
+          0.8999999761581421,
+          0.949999988079071
+        ],
+        "ground_truths": 14847,
+        "labeled_images": 5000
+      }
+    },
+    "accuracy_map_conf0001": {
+      "confidence_threshold": 0.001,
+      "metrics": {
+        "precision": 0.031248709611032904,
+        "recall": 0.8655021223839727,
+        "f1": 0.060319597206150245,
+        "map50": 0.38788237405363113,
+        "map50_95": 0.2598899582113375,
+        "per_class": {
+          "0": {
+            "ground_truths": 9804,
+            "predictions": 272184,
+            "precision": 0.029366164065485114,
+            "recall": 0.8152794777641779,
+            "map50": 0.2513344293352205,
+            "map50_95": 0.14709062741103998
+          },
+          "1": {
+            "ground_truths": 5043,
+            "predictions": 139385,
+            "precision": 0.03313125515658069,
+            "recall": 0.9157247670037676,
+            "map50": 0.5244303187720417,
+            "map50_95": 0.372689289011635
+          }
+        },
+        "iou_thresholds": [
+          0.5,
+          0.550000011920929,
+          0.6000000238418579,
+          0.6499999761581421,
+          0.699999988079071,
+          0.75,
+          0.800000011920929,
+          0.8500000238418579,
+          0.8999999761581421,
+          0.949999988079071
+        ],
+        "ground_truths": 14847,
+        "labeled_images": 5000
+      }
+    }
+  },
+  "run_settings": {
+    "performance_t1_p1_conf030": {
+      "threads": 1,
+      "producers": 1,
+      "active_producers": 1,
+      "queue_size": 40,
+      "draw_outputs": false,
+      "save_outputs": false,
+      "accuracy_enabled": false,
+      "items_discovered": 5000,
+      "images_processed": 5000,
+      "confidence_threshold": 0.3,
+      "warmup_images": 0,
+      "exit_code": 0,
+      "source_profile": "performance_t1_p1_conf030/report_profile.json"
+    },
+    "performance_t2_p2_conf030": {
+      "threads": 2,
+      "producers": 2,
+      "active_producers": 2,
+      "queue_size": 40,
+      "draw_outputs": false,
+      "save_outputs": false,
+      "accuracy_enabled": false,
+      "items_discovered": 5000,
+      "images_processed": 5000,
+      "confidence_threshold": 0.3,
+      "warmup_images": 0,
+      "exit_code": 0,
+      "source_profile": "performance_t2_p2_conf030/report_profile.json"
+    },
+    "accuracy_conf030": {
+      "threads": 2,
+      "producers": 2,
+      "active_producers": 2,
+      "queue_size": 40,
+      "draw_outputs": false,
+      "save_outputs": false,
+      "accuracy_enabled": true,
+      "items_discovered": 5000,
+      "images_processed": 5000,
+      "confidence_threshold": 0.3,
+      "warmup_images": 0,
+      "exit_code": 0,
+      "source_profile": "accuracy_conf030/report_profile.json"
+    },
+    "accuracy_map_conf0001": {
+      "threads": 2,
+      "producers": 2,
+      "active_producers": 2,
+      "queue_size": 40,
+      "draw_outputs": false,
+      "save_outputs": false,
+      "accuracy_enabled": true,
+      "items_discovered": 5000,
+      "images_processed": 5000,
+      "confidence_threshold": 0.001,
+      "warmup_images": 0,
+      "exit_code": 0,
+      "source_profile": "accuracy_map_conf0001/report_profile.json"
+    }
+  },
+  "limitations": [
+    "Kria uses the raw one2one head, quantized-space thresholding and CPU top-k without NMS. Kaggle exports identify one2many plus NMS; this is not an isolated FP32-to-INT8 quantization-loss experiment.",
+    "Performance results come only from the two accuracy-disabled runs. Their application FPS includes image reads, worker startup and pipeline drain, excludes model/OpenCV initialization, and discards no warmup frames.",
+    "All runs disable drawing/saving. No annotated images are exported.",
+    "DPU latency is VART execute_async plus wait, not pure kernel or DMA time. Stages overlap and accumulate worker elapsed time; wall_pct is not utilization.",
+    "Power is SOM-total power, not GPU-only power. Idle fallback/unavailability are retained explicitly. Energy/image uses average power / application FPS.",
+    "Accuracy uses the repository's score-ordered class-aware greedy matching and 101-recall-level AP evaluator, not the Ultralytics evaluator. P/R use matching IoU=0.5; AP spans IoU=0.50:0.05:0.95. F1 is harmonic(macro P, macro R).",
+    "Accuracy-run FPS includes online label loading/matching but excludes final AP aggregation, so do not use it as deployment performance. Process time in the manifest covers the entire CLI including final aggregation.",
+    "These are sequential single passes over 5000 images, not repeated-run statistics. Filesystem caches and thermal state are not reset between runs.",
+    "The test subset and source/model artifacts are user-supplied, not distributed with this excerpt.",
+    "The configured 300 MHz DPU clock and four-runner software limit are metadata, not measured utilization.",
+    "No thermal telemetry, cache reset, repeated-run uncertainty, controlled FP32/INT8 parity or baseline/Fast Finetune ablation is established."
+  ]
+}

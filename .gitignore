@@ -20,7 +20,14 @@ results/
 
 .vai/
 
-docs/
+/docs/*
+!/docs/architecture.md
+!/docs/experiments.md
+!/docs/evidence/
+/docs/evidence/*
+!/docs/evidence/kv260-facehuman-2026-10-21.json
+!/docs/evidence/t4-facehuman-context.json
+
 guides/
 
 # Antigravity CLI workspace state
@@ -31,6 +38,7 @@ guides/
 *:Zone.Identifier
 YOLOv26n_Instance_Segmentation_Progress.md
 .projectmem/events.jsonl
+.projectmem/.current_issue
 .projectmem/watch.pid
 .projectmem/watch.log
 .projectmem/structure.json

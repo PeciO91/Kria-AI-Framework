@@ -16,6 +16,10 @@ _What we're working toward now. Use `- [ ]` / `- [x]` checklists._
 ## Next
 _Queued, but not started._
 
+- [ ] COCO detection image-root mismatch (#0008): documented, not fixed.
+  Any registry correction and deployment validation need a separately approved
+  code/hardware scope; the README redesign did not change dataset behavior.
+
 - [ ] Deferred export-integrity check: the user manually copied the full Kria
   results; no SHA256SUMS is present. Local completion/profile validation passed,
   but remote-to-host file checksum comparison was not performed. Do this only
@@ -25,6 +29,24 @@ _Queued, but not started._
 
 ## Shipped
 _Move completed plans here so the top stays about the future._
+
+### Evidence-led README redesign
+
+- [x] Audit implementation, registries, guides, ignored assets and frozen
+  KV260/T4 exports; approve balanced research-engineering presentation.
+- [x] Lead: curate sanitized evidence; all eight source hashes and four board
+  run copy invariants match, with original precision and no new measurements.
+- [x] Delegate: rewrite README, preserve useful details in corrected task,
+  dataset, architecture and experiment guides; allowlist only intended assets.
+- [x] Validate 17 CLI help surfaces, 11 host contract tests, JSON, links,
+  flags, 16 Bash blocks, ignore rules and diff whitespace.
+- [x] Lead: verify all 14 numeric table rows, review complete diff and
+  consolidated corrections; independent final review and scoped re-review pass.
+- [x] Close documentation issue #0007 and prepare the requested single local
+  documentation commit. No source/config changes, installs, network, hardware
+  rerun, push or PR. Mermaid rendering was not observed; only syntax/structure
+  checked. Exact historical assets/build recipe and broader experiments remain
+  explicitly limited in the public documentation.
 
 ### Full Kria Fast Finetune test and export
 

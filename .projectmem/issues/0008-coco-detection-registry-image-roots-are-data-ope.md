@@ -1,0 +1,3 @@
+# #0008 COCO detection registry image roots are data/openimagesv7/train2017 and val2017, while its labels are under data/coco2017; configured image directories are absent locally. Documentation-only redesign will expose the mismatch without silently changing dataset behavior; code correction and hardware validation are deferred.
+
+- 2026-10-21T13:59:45Z `issue`: COCO detection registry image roots are data/openimagesv7/train2017 and val2017, while its labels are under data/coco2017; configured image directories are absent locally. Documentation-only redesign will expose the mismatch without silently changing dataset behavior; code correction and hardware validation are deferred. [kria_ai/yolov26/detection/config.py:91-99]
