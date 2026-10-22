@@ -30,6 +30,14 @@ _Queued, but not started._
 ## Shipped
 _Move completed plans here so the top stays about the future._
 
+### Python / C++ DPU latency investigation (#0010)
+
+- [x] User confirmed the camera runs approximately 11 ms; the earlier 3 ms
+  observation was mistaken. Controlled C++/Python API means were 10.836/11.589 ms;
+  no production fix is needed.
+- [x] Deleted the local `tmp/` tree and diagnostic host log at the user's
+  request. Investigation history remains in Projectmem; board files unchanged.
+
 ### Evidence-led README redesign
 
 - [x] Audit implementation, registries, guides, ignored assets and frozen
@@ -47,6 +55,23 @@ _Move completed plans here so the top stays about the future._
   rerun, push or PR. Mermaid rendering was not observed; only syntax/structure
   checked. Exact historical assets/build recipe and broader experiments remain
   explicitly limited in the public documentation.
+
+### YOLO26n accuracy and profiling comparison documentation
+
+- [x] Approved scope (user-settled revision): README "Experimental Results"
+  section with four-configuration Accuracy Comparison (YOLO26n) first, then
+  Profiling Comparison with frozen stage-role table and interpretation;
+  throughput/energy moved after the comparison tables.
+- [x] docs/experiments.md: ACCURACY_TABLE before GPU n/s contextual tables;
+  ms/sample units added to broad-distribution and GPU amortized headings;
+  interpretation bullets, retained stage inventory/percentiles/validator.
+- [x] Fast Finetune = 1,000 images recorded as user-confirmed (2026-10-22)
+  metadata in docs/evidence/kv260-facehuman-2026-10-21.json model object;
+  both FPGA rows are INT8-calibrated (no-FastFT is the ablation, not
+  uncalibrated); Pending = no verified measurement, not zero.
+- [x] Validation: links/anchors, JSON parse, diff whitespace, doc visibility;
+  log /tmp/yolo26n-comparison-doc-checks.log; patch
+  /tmp/yolo26n-comparison-implementation.patch.
 
 ### Full Kria Fast Finetune test and export
 

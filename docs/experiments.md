@@ -1,6 +1,6 @@
 # Experiments And Measurement Methodology
 
-This document defines every reported metric, states the conditions under which the recorded measurements were taken, links the curated evidence, gives the T4 GPU context, lists what is and is not validated, and outlines planned experiments. Evidence files are curated excerpts of local run exports — fingerprints inside them identify the frozen experiment; they do not attest reproducible builds.
+This document defines every reported metric, states the conditions under which the recorded measurements were taken, links the curated evidence, compares the KV260 runs against the T4 GPU baseline on the matched test set, lists what is and is not validated, and outlines planned experiments. Evidence files are curated excerpts of local run exports — fingerprints inside them identify the frozen experiment; they do not attest reproducible builds.
 
 ## Evidence Files
 
@@ -49,13 +49,36 @@ Experiment `full_test_20261021T092551Z_DPXti26q`, completed 2026-10-21:
 
 ## Provenance Limits
 
-- The recorded experiment's complete calibration/Fast Finetune recipe is not established by the available export — the README quick start is an example workflow, not that recipe.
+- The recorded experiment's complete calibration/Fast Finetune recipe is not established by the available export — the README quick start is an example workflow, not that recipe. The user confirms 1,000 Fast Finetune images (2026-10-22), but neither the exact image manifest nor the full recipe is recovered from the export.
 - The exact checkpoint, Ultralytics source revision, and test assets used historically are not bundled; source fingerprints in the evidence identify the frozen exports but do not substitute for the missing raw archive, and do not attest reproducible builds.
 - The measured-XMODEL fingerprint matches the current local compiled artifact. A remote-to-host checksum audit of the exported report files was not performed.
 
-## T4 GPU Context (Not Comparable)
+## GPU–FPGA Comparison: Matched Test Set
 
-Two-class FaceHuman YOLO26n and YOLO26s FP32 checkpoints were exported and measured on an NVIDIA T4 for calibration/benchmark context. Note the GPU `s` scale is **not** the COCO-80 `yolov26s` registry entry — these are two-class FaceHuman checkpoints; whether they share identical original weights with the Kria artifact is not established, and the full build recipe is not recorded. These results are **contextual only**: they use FP32 (not INT8), a different evaluator, the one2many head with NMS (the Kria path uses one2one/top-k without NMS), GPU-only power (not SOM-total), different batch sizes, 5,000-image accuracy evaluation but only 500 timed performance images with 50 warmups, and one GPU despite two being visible. Do not derive quantization loss, speedup, or efficiency claims from these rows.
+Two-class FaceHuman YOLO26n and YOLO26s FP32 checkpoints — the corresponding unquantized baseline models — were exported and measured on an NVIDIA T4 and evaluated on the same matched 5,000-image FaceHuman test set used on the KV260. The GPU `s` scale is still **not** the COCO-80 `yolov26s` registry entry (two-class FaceHuman checkpoint), and no FPGA `s`-scale profile exists, so only the `n` scale is compared against the board below.
+
+The comparison is descriptive, not a controlled isolation of hardware or quantization effects:
+
+- GPU runs are **FP32**; the board artifact is **INT8 Fast Finetune**. GPU INT8 results are not provided yet (see Planned Experiments).
+- Source metadata reports the GPU path using the **one2many head with NMS** while the Kria path exports **raw one2one tensors with top-k and no NMS**, and the two sides use different evaluators.
+- GPU performance timing covers **500 images after 50 warmups**; FPGA runs cover all **5,000 images with no warmup exclusion**. Batch sizes and measurement windows differ.
+- GPU power is **GPU-only**; board power is **SOM-total**.
+- GPU preprocessing/transfer boundaries are not proven identical to the FPGA stage boundaries, and GPU "inference" includes a different head scope than raw DPU outputs — no per-stage speedup claims are made.
+
+Within those limits, matched accuracy and profiling-stage tables follow.
+
+### Accuracy Comparison (YOLO26n)
+
+| YOLO26n configuration | Fast Finetune | Precision (%) | Recall (%) | F1 (%) | mAP50 (%) | mAP50:95 (%) | Status |
+|---|---|---:|---:|---:|---:|---:|---|
+| GPU (T4), FP32 | Not applied | 40.87 | 57.15 | 47.66 | 43.92 | 30.73 | Measured |
+| GPU, INT8 | Not specified yet | Pending | Pending | Pending | Pending | Pending | Pending |
+| FPGA (KV260), INT8 | With, 1,000 images | 46.62 | 32.63 | 38.39 | 38.79 | 25.99 | Measured |
+| FPGA (KV260), INT8 | Without | Pending | Pending | Pending | Pending | Pending | Pending |
+
+For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The GPU and FPGA use different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+
+Fast Finetune is the ablation between the two FPGA rows — both are INT8 quantization-calibrated; "Without" is not uncalibrated. The 1,000 Fast Finetune images are user-confirmed metadata (2026-10-22), not a count verified from the export.
 
 **FP32 accuracy** (5,000 images, same ordered classes):
 
@@ -74,6 +97,110 @@ Two-class FaceHuman YOLO26n and YOLO26s FP32 checkpoints were exported and measu
 | YOLO26s | 16 | 92.586 | 52.570 | -- | 10.8008 (amortized) | 64.526 | 0.6969 |
 
 "Inference" is model-forward timing within the compute window; "E2E excl. I/O" adds CPU-side work excluding disk reads; the batch-16 E2E is amortized per image. CUDA synchronization and raw NVML sample alignment are not independently proven from the exported JSON — see `limitations` in the evidence file.
+
+### Profiling Stage Distribution
+
+Broad stage-role comparison of mean/p50/p95 per sample — GPU batch 1 versus FPGA 1-runner and 2-runner performance runs. Stage names are normalized roles, not identical boundaries: `profiler`-merged raw samples make the pooled percentiles valid as stored, but parent/child stages overlap, thread totals are not wall-time shares or utilization, and the FPGA has no per-image end-to-end latency measurement (it cannot be recovered by summing overlapping means or as 1/FPS).
+
+| Stage role | T4 FP32 batch 1: mean / p50 / p95 (ms/sample) | KV260 1 / 1: mean / p50 / p95 (ms/sample) | KV260 2 / 2: mean / p50 / p95 (ms/sample) |
+|---|---|---|---|
+| Image read / decode | 7.567 / 6.982 / 13.286 | 34.244 / 30.931 / 54.000 | 36.362 / 32.836 / 56.414 |
+| Preprocessing | 1.902 / 1.857 / 2.405 | 11.544 / 11.493 / 15.178 | 18.817 / 17.852 / 29.323 |
+| Model / accelerator execution | 11.550 / 9.405 / 12.322 | 12.254 / 12.190 / 12.466 | 14.082 / 12.631 / 21.940 |
+| Postprocessing | 1.131 / 1.073 / 1.818 | 6.522 / 6.342 / 8.187 | 8.214 / 6.984 / 16.537 |
+
+Stages with no GPU counterpart — input/output queue waits, runner setup, decoder sub-timers, top-k — are *not exported* rather than zero. Conversely, `draw_boxes`, `write`, and the writer queue waits were disabled in the recorded FPGA runs, so they are not measured (not zeros). FPGA `nms_or_topk` is top-k only here. FPGA sample-unit caveats: `runner_setup` is per runner, `consumer_dequeue_wait` counts include end-of-stream sentinels, `decode_ultra_threshold` is sampled per pyramid level, and `decode_ultra_dequant`/`class_score`/`box_decode` occur only for surviving levels.
+
+Interpretation:
+
+- CPU/data-path work matters on KV260: in the 1/1 run, image reading averages 34.24 ms and preprocessing 11.54 ms, compared with 12.25 ms for VART submit/wait. Image I/O and CPU stages are optimization candidates; these overlapping timers do not establish exclusive bottleneck shares.
+- The 2/2 pipeline reaches 35.83 FPS versus 21.69 FPS for 1/1, even though mean VART submit/wait rises from 12.25 to 14.08 ms. Pipeline concurrency improves observed throughput; it does not make an individual DPU call faster.
+- T4 FP32 batch-1 inference and KV260 submit/wait have means of 11.55 ms and 12.25/14.08 ms respectively, but cover different graph/runtime boundaries. Do not interpret similar means as equivalent hardware execution.
+- FPGA per-image end-to-end latency was not measured. Neither a sum of overlapping means nor reciprocal application FPS reconstructs it.
+
+### GPU Performance Stage Detail
+
+All six GPU performance stages: batch-1 statistics, separately labeled batch-16 amortized-per-image statistics, and separate full-batch statistics over the 31 complete batches (the 4-image partial batch is excluded there).
+
+| Reported GPU stage | Batch 1: mean / p50 / p95 (ms/image) | Batch 16 amortized: mean / p50 / p95 (ms/image) |
+|---|---|---|
+| Preprocessing | 1.9017 / 1.8569 / 2.4047 | 1.8450 / 1.8279 / 1.9270 |
+| Model inference | 11.5503 / 9.4054 / 12.3215 | 2.9922 / 2.8837 / 3.0695 |
+| Postprocessing | 1.1307 / 1.0730 / 1.8182 | 0.7028 / 0.7069 / 0.7811 |
+| End-to-end excluding disk I/O | 15.5100 / 13.4748 / 16.4710 | 5.6357 / 5.5106 / 6.0562 |
+| Disk / image load | 7.5666 / 6.9816 / 13.2855 | 8.8195 / 8.4912 / 10.4663 |
+| End-to-end including disk I/O | 23.0767 / 20.7252 / 30.3421 | 14.4552 / 14.0754 / 16.1815 |
+
+| Reported GPU stage | Full batch of 16: mean / p50 / p95 (ms/batch) |
+|---|---|
+| Preprocessing | 29.5003 / 29.2467 / 30.7777 |
+| Model inference | 46.5755 / 46.1396 / 49.0719 |
+| Postprocessing | 11.2414 / 11.3100 / 12.4020 |
+| End-to-end excluding disk I/O | 88.8114 / 88.1694 / 94.3744 |
+| Disk / image load | 140.8944 / 135.8587 / 167.2579 |
+| End-to-end including disk I/O | 229.7058 / 225.2063 / 257.6020 |
+
+### FPGA Profiling Stage Inventory
+
+The full inventory of 20 distinct profiled stages across the four FPGA runs (performance 1/1, performance 2/2, accuracy at confidence 0.3, accuracy at confidence 0.001), with means and exact sample-unit labels — per image, per runner, per dequeue (including sentinels), or per pyramid level / surviving level. Sub-stage means are not summed into parent means, and sample units are not mixed. `P1`/`P2` are the two performance runs; `A0.3`/`A0.001` are the two accuracy runs.
+
+| Recorded FPGA stage | One timing sample represents | Counts: P1 / P2 / A0.3 / A0.001 | P1 mean ms | P2 mean ms | A0.3 mean ms | A0.001 mean ms |
+|---|---|---|---|---|---|---|
+| `image_read` | image | 5000 / 5000 / 5000 / 5000 | 34.244 | 36.362 | 38.606 | 92.664 |
+| `preprocess` | image | 5000 / 5000 / 5000 / 5000 | 11.544 | 18.817 | 21.133 | 84.525 |
+| `input_enqueue_wait` | image enqueue | 5000 / 5000 / 5000 / 5000 | 0.161 | 0.173 | 0.161 | 0.161 |
+| `producer_total` | image | 5000 / 5000 / 5000 / 5000 | 46.089 | 55.494 | 60.039 | 177.520 |
+| `runner_setup` | runner | 1 / 2 / 2 / 2 | 217.040 | 273.295 | 280.535 | 183.270 |
+| `consumer_dequeue_wait` | dequeue, including sentinel | 5001 / 5002 / 5002 / 5002 | 26.862 | 32.969 | 27.646 | 7.397 |
+| `dpu` | image | 5000 / 5000 / 5000 / 5000 | 12.254 | 14.082 | 15.528 | 26.636 |
+| `decode_ultra_layout` | image | 5000 / 5000 / 5000 / 5000 | 0.873 | 0.901 | 0.899 | 0.925 |
+| `decode_ultra_threshold` | pyramid level | 15000 / 15000 / 15000 / 15000 | 0.632 | 0.849 | 1.004 | 6.458 |
+| `decode_ultra_dequant` | surviving level | 5686 / 5686 / 5686 / 13428 | 0.163 | 0.245 | 0.317 | 3.199 |
+| `decode_ultra_class_score` | surviving level | 5686 / 5686 / 5686 / 13428 | 0.416 | 0.504 | 0.521 | 1.189 |
+| `decode_ultra_box_decode` | surviving level | 5686 / 5686 / 5686 / 13428 | 0.307 | 0.407 | 0.439 | 2.063 |
+| `decode_ultra_concat` | image | 5000 / 5000 / 5000 / 5000 | 0.077 | 0.111 | 0.117 | 1.669 |
+| `decode_total` | image | 5000 / 5000 / 5000 / 5000 | 4.603 | 5.793 | 6.456 | 41.108 |
+| `nms_or_topk` | image; top-k only | 5000 / 5000 / 5000 / 5000 | 0.231 | 0.262 | 0.276 | 1.181 |
+| `coord_scale` | image | 5000 / 5000 / 5000 / 5000 | 1.039 | 1.423 | 1.485 | 4.581 |
+| `detection_postprocess` | image | 5000 / 5000 / 5000 / 5000 | 1.863 | 2.355 | 2.434 | 7.368 |
+| `postprocess` | image | 5000 / 5000 / 5000 / 5000 | 6.522 | 8.214 | 8.967 | 48.581 |
+| `accuracy` | image; labels + matching | — / — / 5000 / 5000 | — | — | 7.240 | 94.294 |
+| `consumer_total` | image | 5000 / 5000 / 5000 / 5000 | 18.908 | 22.445 | 31.938 | 169.974 |
+
+p50/p95 tails for the two performance runs:
+
+| Recorded FPGA stage | P1 p50 / p95 (ms/sample) | P2 p50 / p95 (ms/sample) |
+|---|---|---|
+| `image_read` | 30.931 / 54.000 | 32.836 / 56.414 |
+| `preprocess` | 11.493 / 15.178 | 17.852 / 29.323 |
+| `input_enqueue_wait` | 0.155 / 0.200 | 0.164 / 0.236 |
+| `producer_total` | 42.754 / 66.843 | 52.131 / 78.265 |
+| `runner_setup` | 217.040 / 217.040 | 273.295 / 359.799 |
+| `consumer_dequeue_wait` | 23.679 / 47.833 | 31.500 / 60.843 |
+| `dpu` | 12.190 / 12.466 | 12.631 / 21.940 |
+| `decode_ultra_layout` | 0.855 / 0.971 | 0.868 / 1.059 |
+| `decode_ultra_threshold` | 0.419 / 1.174 | 0.447 / 1.595 |
+| `decode_ultra_dequant` | 0.118 / 0.282 | 0.138 / 0.343 |
+| `decode_ultra_class_score` | 0.408 / 0.520 | 0.441 / 0.690 |
+| `decode_ultra_box_decode` | 0.285 / 0.389 | 0.306 / 0.496 |
+| `decode_ultra_concat` | 0.080 / 0.114 | 0.089 / 0.147 |
+| `decode_total` | 4.413 / 6.185 | 4.935 / 12.590 |
+| `nms_or_topk` | 0.234 / 0.289 | 0.243 / 0.317 |
+| `coord_scale` | 1.014 / 1.181 | 1.061 / 3.277 |
+| `detection_postprocess` | 1.831 / 2.089 | 1.913 / 4.825 |
+| `postprocess` | 6.342 / 8.187 | 6.984 / 16.537 |
+| `consumer_total` | 18.700 / 20.688 | 20.178 / 34.803 |
+
+### GPU Validator Stages
+
+The GPU validator reports four stages from its own run (validator batch size is not recorded — this is not the batch-1 performance experiment).
+
+| Reported validator stage | Reported ms/image (separate accuracy run) |
+|---|---|
+| preprocess | 0.537518 |
+| inference | 3.627588 |
+| loss | 0.000470 |
+| postprocess | 0.777018 |
 
 ## Validation Matrix
 
@@ -94,5 +221,6 @@ Framed as future work, not current claims:
 2. Repeated thermal- and cache-aware trials to produce means/confidence intervals for FPS, latency, power, and energy.
 3. Baseline-vs-Fast-Finetune ablation quantifying what the flag contributes.
 4. Pruning trade-off study (ratio vs accuracy vs measured FPS) once optimizer artifacts are validated on hardware.
-5. Cross-task hardware validation: classification and instance-segmentation runs with the same reporting rigor.
-6. Versioned releases of model/source/environment so experiments can be reproduced against pinned assets.
+5. GPU INT8 results for the same matched FaceHuman test set once T4 INT8 exports exist — this enables a precision-matched configuration but does not alone align backend, head, or evaluator.
+6. Cross-task hardware validation: classification and instance-segmentation runs with the same reporting rigor.
+7. Versioned releases of model/source/environment so experiments can be reproduced against pinned assets.

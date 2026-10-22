@@ -55,27 +55,53 @@ Details: [docs/architecture.md](docs/architecture.md).
 
 YOLOv5 and semantic segmentation are outside the current architecture.
 
-## Measured KV260 Results
+## Experimental Results
 
-Experiment `full_test_20261021T092551Z_DPXti26q` (2026-10-21): INT8 Fast Finetune `yolov26n_FaceHuman` XMODEL on a KV260 (configured DPU `DPUCZDX8G_ISA1_B4096` at 300 MHz), 5,000 test images at 640x640, ordered classes Person / Human face, 14,847 ground-truth boxes (9,804 / 5,043).
+Accuracy is evaluated on the same held-out 5,000-image Open Images V7 test set (14,847 ground-truth boxes: 9,804 Person / 5,043 Human face) using two-class FaceHuman YOLO26n models with ordered classes `Person`, `Human face` and 640x640 input. GPU profiling covers 500 timed images after 50 warmups; FPGA profiling covers all 5,000 images with no warmup exclusion. The measured FPGA results come from experiment `full_test_20261021T092551Z_DPXti26q` (2026-10-21): the INT8 Fast Finetune `yolov26n_FaceHuman` XMODEL on a KV260 (configured DPU `DPUCZDX8G_ISA1_B4096` at 300 MHz). The GPU baseline is the corresponding unquantized FP32 checkpoint on an NVIDIA T4.
 
-**Performance** (confidence threshold 0.3, queue size 40, accuracy/drawing/saving disabled, profiling enabled):
+### Accuracy Comparison (YOLO26n)
+
+| YOLO26n configuration | Fast Finetune | Precision (%) | Recall (%) | F1 (%) | mAP50 (%) | mAP50:95 (%) | Status |
+|---|---|---:|---:|---:|---:|---:|---|
+| GPU (T4), FP32 | Not applied | 40.87 | 57.15 | 47.66 | 43.92 | 30.73 | Measured |
+| GPU, INT8 | Not specified yet | Pending | Pending | Pending | Pending | Pending | Pending |
+| FPGA (KV260), INT8 | With, 1,000 images | 46.62 | 32.63 | 38.39 | 38.79 | 25.99 | Measured |
+| FPGA (KV260), INT8 | Without | Pending | Pending | Pending | Pending | Pending | Pending |
+
+For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The GPU and FPGA use different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+
+Fast Finetune is the ablation between the two FPGA rows — both are INT8 quantization-calibrated; "Without" is not uncalibrated. The 1,000 Fast Finetune images are user-confirmed metadata (2026-10-22), not a count verified from the export.
+
+### Profiling Comparison (YOLO26n)
+
+Mean per-sample timing by broad stage role. `1 / 1` and `2 / 2` are DPU runners / producers — both FPGA runs use DPU batch 1 and the same measured Fast Finetune artifact; the GPU column is FP32 batch 1.
+
+| Stage role (mean ms/image) | T4 FP32, batch 1 | KV260 INT8, 1 / 1 | KV260 INT8, 2 / 2 |
+|---|---:|---:|---:|
+| Image read / decode | 7.567 | 34.244 | 36.362 |
+| Preprocessing | 1.902 | 11.544 | 18.817 |
+| Model / accelerator execution | 11.550 | 12.254 | 14.082 |
+| Postprocessing | 1.131 | 6.522 | 8.214 |
+| End-to-end excluding disk I/O | 15.510 | Not measured | Not measured |
+| End-to-end including disk I/O | 23.077 | Not measured | Not measured |
+
+Interpretation:
+
+- CPU/data-path work matters on KV260: in the 1/1 run, image reading averages 34.24 ms and preprocessing 11.54 ms, compared with 12.25 ms for VART submit/wait. Image I/O and CPU stages are optimization candidates; these overlapping timers do not establish exclusive bottleneck shares.
+- The 2/2 pipeline reaches 35.83 FPS versus 21.69 FPS for 1/1, even though mean VART submit/wait rises from 12.25 to 14.08 ms. Pipeline concurrency improves observed throughput; it does not make an individual DPU call faster.
+- T4 FP32 batch-1 inference and KV260 submit/wait have means of 11.55 ms and 12.25/14.08 ms respectively, but cover different graph/runtime boundaries. Do not interpret similar means as equivalent hardware execution.
+- FPGA per-image end-to-end latency was not measured. Neither a sum of overlapping means nor reciprocal application FPS reconstructs it.
+
+These are descriptive stage-role comparisons, not identical timing boundaries or isolated hardware/quantization effects: GPU is FP32 timed over 500 images after 50 warmups, FPGA is INT8 over all 5,000 images with no warmup exclusion; the heads differ (GPU one2many+NMS vs raw one2one/top-k) and power scopes differ (GPU-only vs SOM-total). GPU INT8 results are not yet available. Full stage inventory, percentiles, and caveats: [docs/experiments.md](docs/experiments.md#gpufpga-comparison-matched-test-set).
+
+### KV260 Throughput And Energy
+
+Performance source runs `performance_t1_p1_conf030` and `performance_t2_p2_conf030` — confidence threshold 0.3, queue size 40, accuracy/drawing/saving disabled, profiling enabled, 5,000 DPU jobs each, runtime power sampling, no warmup exclusion:
 
 | DPU runners / producers | Application FPS | Mean VART submit/wait (ms/image) | SOM-total power (W) | Energy (mJ/image) |
 |---|---:|---:|---:|---:|
 | 1 / 1 | 21.69 | 12.25 | 6.62 | 305.19 |
 | 2 / 2 | 35.83 | 14.08 | 6.98 | 194.69 |
-
-**Accuracy** (same 5,000 images; operating-point and AP evaluations use different confidence floors):
-
-| Evaluation | Confidence floor | Precision (%) | Recall (%) | F1 (%) | mAP50 (%) | mAP50:95 (%) |
-|---|---:|---:|---:|---:|---:|---:|
-| Operating point | 0.3 | 46.62 | 32.63 | 38.39 | -- | -- |
-| AP evaluation | 0.001 | -- | -- | -- | 38.79 | 25.99 |
-
-`--` means intentionally not shown in this table, not zero — the full metrics (including the confidence-0.3 AP) are retained in the evidence file; each evaluation uses the confidence floor that defines it.
-
-Performance source runs: `performance_t1_p1_conf030` and `performance_t2_p2_conf030` — 5,000 DPU jobs each, runtime power sampling, no warmup exclusion.
 
 **Caveats.**
 

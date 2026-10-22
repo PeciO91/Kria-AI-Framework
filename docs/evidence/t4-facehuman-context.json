@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Contextual two-class YOLO26 FP32 T4 exports; not a controlled comparison with the KV260 deployment.",
+  "description": "Matched-test-set two-class YOLO26 FP32 T4 baselines for descriptive GPU/FPGA comparisons with documented stage scopes.",
   "curation_notes": [
     "Curated excerpts retaining reported metric precision, execution settings and measurement windows.",
     "Omitted checkpoint/run paths and per-image filename lists.",
@@ -70,6 +70,13 @@
           "metrics/mAP50(B)": 0.439177636759253,
           "metrics/mAP50-95(B)": 0.30725042735391095,
           "fitness": 0.30725042735391095
+        },
+        "validation_wall_time_sec": 7975.589,
+        "validator_speed_ms_per_image": {
+          "preprocess": 0.5375181732003511,
+          "inference": 3.6275882282007843,
+          "loss": 0.0004695171979619772,
+          "postprocess": 0.777017637398967
         }
       },
       "accuracy_operating_point_conf_030": {
@@ -126,7 +133,8 @@
               ]
             ]
           }
-        }
+        },
+        "validation_wall_time_sec": 48.621
       },
       "performance_benchmarks": {
         "batch_16_throughput_run": {
@@ -439,6 +447,13 @@
           "metrics/mAP50(B)": 0.46671014836448016,
           "metrics/mAP50-95(B)": 0.331097839522967,
           "fitness": 0.331097839522967
+        },
+        "validation_wall_time_sec": 69.631,
+        "validator_speed_ms_per_image": {
+          "preprocess": 0.6435792794003646,
+          "inference": 6.872180294000737,
+          "loss": 0.0006786178001675579,
+          "postprocess": 0.9184506145996238
         }
       },
       "accuracy_operating_point_conf_030": {
@@ -495,7 +510,8 @@
               ]
             ]
           }
-        }
+        },
+        "validation_wall_time_sec": 67.247
       },
       "performance_benchmarks": {
         "batch_16_throughput_run": {
@@ -752,6 +768,17 @@
     "Accuracy covers 5000 images, while each performance benchmark times 500 images after 50 warmups.",
     "Power is GPU-only NVML over a compute-only window excluding disk I/O, not SOM-total, host-system or wall-socket power.",
     "JSON exports do not independently prove CUDA synchronization or raw NVML sample alignment.",
-    "No isolated quantization loss, cross-platform speedup, energy-efficiency ratio or Fast Finetune improvement is established."
-  ]
+    "Cross-platform results may be compared descriptively, but differences do not isolate quantization, Fast Finetune or hardware effects; GPU-only and SOM-total power do not establish a matched whole-system efficiency ratio."
+  ],
+  "comparison_basis": {
+    "model_relationship": "The project author confirms the Kaggle FP32 run uses the unquantized corresponding model.",
+    "accuracy_test_set": "Same 5000 unique image filenames and ordered classes, checked against the board dataset manifest.",
+    "matched_images": 5000,
+    "gpu_scales_checked": [
+      "n",
+      "s"
+    ],
+    "board_dataset_manifest_sha256": "fdd664f9833fad4e091c67dd7c87a59bd92df5dc6c9ffbce616d02202eb22556",
+    "interpretation": "Descriptive deployment comparison; head/evaluator/timing/power scopes remain explicitly reported, not isolated hardware or precision effects."
+  }
 }
