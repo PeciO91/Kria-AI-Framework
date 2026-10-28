@@ -30,6 +30,28 @@ _Queued, but not started._
 ## Shipped
 _Move completed plans here so the top stays about the future._
 
+### Ultralytics 8.4.150 evaluation compatibility (#0011)
+
+- [x] Audit notebook protocol and existing evaluator; identify usable
+  existing NumPy/Torch host interpreters.
+- [x] Acquire exact Ultralytics 8.4.150 reference: wheel downloaded to /tmp
+  scratch (SHA256 1af11709f0e525e72d8b1b71916c0081de3e63c49ab9ffdbffa995ae6a8c69de),
+  extracted read-only; no installs or environment changes.
+- [x] Lead: author matching, confusion-matrix counting and AP parity tests
+  first, port evaluation math to NumPy, and verify against pinned reference;
+  keep historical reports unchanged. Scorer ultralytics-8.4.150-numpy-v1:
+  12 parity tests green, 64-scene exact-source oracle green.
+- [x] Verify narrow host regressions and one final suite, review full diff,
+  label new evaluator in current documentation/report metadata; no hardware
+  run, install, commit or push.
+  Outcome: full suite 98 total = 90 pass, 6 skip, 2 known missing-cv2 errors
+  (test_leaky_conv_relu_dw_policy and
+  test_split_c3k2_cv1_is_numerically_equivalent); compileall, benchmark
+  --help, links/anchors and diff checks pass. Accuracy metadata now records
+  actual run confidence floor, matching IoU 0.5 and NumPy version; published
+  KV260 accuracy stays labeled historical legacy scoring. No hardware run,
+  install, commit or push performed.
+
 ### Python / C++ DPU latency investigation (#0010)
 
 - [x] User confirmed the camera runs approximately 11 ms; the earlier 3 ms

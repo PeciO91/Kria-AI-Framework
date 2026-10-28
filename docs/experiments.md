@@ -42,10 +42,25 @@ Experiment `full_test_20261021T092551Z_DPXti26q`, completed 2026-10-21:
 - **SOM-total power**: sampled power of the KV260 SOM. It is neither carrier-board/wall-socket power nor DPU-only power.
 - **Energy per image**: sampled average power divided by application FPS.
 - **Profiling stages**: parent/child/worker stages overlap and totals accumulate elapsed time across threads, so `wall_pct` can exceed 100%; it is not CPU or DPU utilization or an exclusive bottleneck share. The `dpu` profile stage is the VART submit/wait measure, not separate DMA/cache synchronization. Queue-wait counts include end-of-stream sentinels; per-image totals do not.
-- **Accuracy evaluator**: a custom class-aware greedy matcher — IoU 0.5 for precision/recall, 101-recall-level AP at IoU 0.50:0.05:0.95, F1 as the harmonic mean of macro precision and macro recall. It is not the official COCO or Ultralytics evaluator.
+- **Historical KV260 accuracy evaluator** (produced the published KV260 accuracy numbers): a custom class-aware greedy matcher — IoU 0.5 for precision/recall, 101-recall-level AP at IoU 0.50:0.05:0.95, F1 as the harmonic mean of macro precision and macro recall. It was not the official COCO or Ultralytics evaluator, and it is not the current scorer described below.
 - **Run statistics**: all numbers are single sequential passes — no repeated-run means or confidence intervals. Caches and thermal conditions were not reset between runs; thermal telemetry is absent.
 - **Accuracy-run FPS**: online label matching runs in the pipeline during `--accuracy`, so its FPS includes matching overhead but excludes final AP aggregation; it is not used as a deployment-performance figure.
 - **Exit status**: all four board processes completed successfully; per-run image/GT counts are recorded in the evidence file.
+
+### Current Detection Evaluator
+
+The current `--accuracy` code path uses a versioned NumPy scorer identified in reports as `ultralytics-8.4.150-numpy-v1` (no new runtime dependency — NumPy only). Its protocol:
+
+- **AP**: upstream class-aware validator matching/deduplication semantics with a 101-point interpolated trapezoidal integration, averaged over classes that have ground truth. Box IoU uses a 1e-7 denominator epsilon.
+- **Fixed-confidence P/R**: a separate class-agnostic geometric confusion-matrix matcher — strict score > configured run confidence floor and IoU > 0.5, with class errors counted as both FP and FN.
+- **F1**: harmonic mean of macro precision and macro recall across all configured classes.
+- **Determinism**: canonical filename/prediction-index ordering precedes the upstream global score sort, so per-worker results merge deterministically; the board aggregates per-worker confusion matrices. Equal-score tie ordering intentionally follows NumPy's default argsort and can differ across NumPy versions; exact tie reproduction also requires a matching NumPy version.
+- **Reporting**: the text report prints the evaluator ID; the accuracy JSON records `evaluator`, `precision_recall_source`, `confusion_matrix`, `precision_recall_confidence_threshold` (the actual run floor — 0.3 for the operating-point run, 0.001 for the AP run), `precision_recall_matching_iou` (0.5), and `numpy_version` fields.
+- The previous no-matrix aggregate API remains available and is explicitly labeled `ap_matches_at_input_confidence` — it is not the notebook confusion-matrix metric.
+
+Reference: the parity fixture was generated from the exact downloaded Ultralytics 8.4.150 wheel (SHA256 `1af11709f0e525e72d8b1b71916c0081de3e63c49ab9ffdbffa995ae6a8c69de`); upstream reference functions were AST-isolated for CPU tests without installing the package. Parity tests cover matching, confusion-matrix counting, and AP integration, plus a 64-scene exact-source oracle — this establishes scorer parity with the pinned reference for axis-aligned detection boxes under the default non-Hungarian matcher, **not** full-model or hardware parity.
+
+No fresh hardware accuracy runs have been performed with this scorer. Published KV260 accuracy retains legacy scoring; GPU accuracy uses Ultralytics 8.4.150. All historical numeric tables and evidence files are unchanged.
 
 ## Provenance Limits
 
@@ -60,7 +75,7 @@ Two-class FaceHuman YOLO26n and YOLO26s FP32 checkpoints — the corresponding u
 The comparison is descriptive, not a controlled isolation of hardware or quantization effects:
 
 - GPU runs are **FP32**; the board artifact is **INT8 Fast Finetune**. GPU INT8 results are not provided yet (see Planned Experiments).
-- Source metadata reports the GPU path using the **one2many head with NMS** while the Kria path exports **raw one2one tensors with top-k and no NMS**, and the two sides use different evaluators.
+- Source metadata reports the GPU path using the **one2many head with NMS** while the Kria path exports **raw one2one tensors with top-k and no NMS**, and the published results were produced by different evaluators.
 - GPU performance timing covers **500 images after 50 warmups**; FPGA runs cover all **5,000 images with no warmup exclusion**. Batch sizes and measurement windows differ.
 - GPU power is **GPU-only**; board power is **SOM-total**.
 - GPU preprocessing/transfer boundaries are not proven identical to the FPGA stage boundaries, and GPU "inference" includes a different head scope than raw DPU outputs — no per-stage speedup claims are made.
@@ -76,7 +91,9 @@ Within those limits, matched accuracy and profiling-stage tables follow.
 | FPGA (KV260), INT8 | With, 1,000 images | 46.62 | 32.63 | 38.39 | 38.79 | 25.99 | Measured |
 | FPGA (KV260), INT8 | Without | Pending | Pending | Pending | Pending | Pending | Pending |
 
-For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The GPU and FPGA use different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The published GPU and FPGA results used different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+
+The published FPGA accuracy values were produced by the project’s legacy scorer (confidence-ordered class-aware matching with mean 101-point AP); the GPU values use Ultralytics 8.4.150. All numbers remain unchanged and do not retroactively change under the current evaluator described in [Current Detection Evaluator](#current-detection-evaluator). Fresh FPGA accuracy runs at confidence 0.3 and 0.001 — not yet performed — are needed before replacing the legacy FPGA rows.
 
 Fast Finetune is the ablation between the two FPGA rows — both are INT8 quantization-calibrated; "Without" is not uncalibrated. The 1,000 Fast Finetune images are user-confirmed metadata (2026-10-22), not a count verified from the export.
 
@@ -193,7 +210,7 @@ p50/p95 tails for the two performance runs:
 
 ### GPU Validator Stages
 
-The GPU validator reports four stages from its own run (validator batch size is not recorded — this is not the batch-1 performance experiment).
+The GPU validator reports four stages from its own accuracy run at batch 16, confirmed by `yolo-eval.ipynb` — this is not the batch-1 performance experiment.
 
 | Reported validator stage | Reported ms/image (separate accuracy run) |
 |---|---|

@@ -200,14 +200,23 @@ def _consumer(
     evaluation_records = []
     ground_truth_counts = {}
     labeled_images = 0
+    confusion_matrix = None
     try:
         from kria_ai.yolov26.decode import UltralyticsDecoderCache, decode_ultralytics_output
         from kria_ai.yolov26.detection.evaluate import (
+            detection_confusion_matrix,
             load_yolo_detection_labels,
             match_detection_predictions,
         )
         from kria_ai.yolov26.detection.postprocess import draw_detections, postprocess_detections
 
+        if accuracy:
+            import numpy as np
+
+            confusion_matrix = np.zeros(
+                (model_config.num_classes + 1, model_config.num_classes + 1),
+                dtype=np.int64,
+            )
         with profiler.time("runner_setup"):
             runner = create_runner(dpu_model)
             output_buffers = allocate_output_buffers(runner)
@@ -279,6 +288,11 @@ def _consumer(
                             ground_truth_boxes,
                             iou_thresholds,
                         )
+                        confusion_matrix += detection_confusion_matrix(
+                            class_ids, scores, boxes, ground_truth_classes,
+                            ground_truth_boxes, model_config.num_classes,
+                            confidence_threshold=confidence_threshold,
+                        )
                         evaluation_records.extend(
                             (int(class_id), float(score), matched.copy(), filename, prediction_index)
                             for prediction_index, (class_id, score, matched) in enumerate(
@@ -328,6 +342,7 @@ def _consumer(
             evaluation_records,
             ground_truth_counts,
             labeled_images,
+            confusion_matrix,
         )
         if runner is not None:
             del runner
@@ -347,27 +362,36 @@ def _xmodel_path(model_id, explicit, build_root):
     return local if local.is_file() else ArtifactPaths(model_id, build_root).compiled_xmodel
 
 
-def _accuracy_metrics(results, num_classes, iou_thresholds):
+def _accuracy_metrics(results, num_classes, iou_thresholds, *, confidence_threshold=None):
     from kria_ai.yolov26.detection.evaluate import aggregate_detection_metrics
 
     evaluation_records = []
     ground_truth_counts = {}
     labeled_images = 0
+    confusion_matrix = None
     for result in results:
         if not result:
             continue
+        if len(result) < 8 or result[7] is None:
+            raise RuntimeError("Incomplete worker accuracy results: confusion matrix is missing")
         evaluation_records.extend(result[4])
         for class_id, count in result[5].items():
             ground_truth_counts[class_id] = ground_truth_counts.get(class_id, 0) + count
         labeled_images += result[6]
+        confusion_matrix = (
+            result[7].copy() if confusion_matrix is None else confusion_matrix + result[7]
+        )
     metrics = aggregate_detection_metrics(
         evaluation_records,
         ground_truth_counts,
         num_classes,
         iou_thresholds,
+        confusion_matrix=confusion_matrix,
     )
     metrics["ground_truths"] = sum(ground_truth_counts.values())
     metrics["labeled_images"] = labeled_images
+    metrics["precision_recall_confidence_threshold"] = confidence_threshold
+    metrics["precision_recall_matching_iou"] = 0.5
     return metrics
 
 
@@ -624,7 +648,10 @@ def main(argv: Sequence[str] | None = None):
     )
     power_note = " (idle fallback)" if power_source == "idle_fallback" else ""
     accuracy_metrics = (
-        _accuracy_metrics(results, model_config.num_classes, iou_thresholds)
+        _accuracy_metrics(
+            results, model_config.num_classes, iou_thresholds,
+            confidence_threshold=confidence_threshold,
+        )
         if args.accuracy
         else None
     )
@@ -644,6 +671,7 @@ def main(argv: Sequence[str] | None = None):
     ]
     if accuracy_metrics is not None:
         report_metrics.extend([
+            ("Evaluator:", accuracy_metrics["evaluator"]),
             ("Labeled images:", accuracy_metrics["labeled_images"]),
             ("Ground-truth boxes:", accuracy_metrics["ground_truths"]),
             ("Score threshold:", f"{confidence_threshold:.4f}"),

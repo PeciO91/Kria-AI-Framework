@@ -68,7 +68,9 @@ Accuracy is evaluated on the same held-out 5,000-image Open Images V7 test set (
 | FPGA (KV260), INT8 | With, 1,000 images | 46.62 | 32.63 | 38.39 | 38.79 | 25.99 | Measured |
 | FPGA (KV260), INT8 | Without | Pending | Pending | Pending | Pending | Pending | Pending |
 
-For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The GPU and FPGA use different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+For each measured configuration, precision/recall/F1 are reported at confidence 0.3 and matching IoU 0.5; mAP comes from a separate confidence-0.001 evaluation. **Pending** means no verified measurement exists — not zero. GPU F1 is the harmonic mean of macro precision and macro recall, matching the board evaluator's definition. The published GPU and FPGA results used different evaluators and detection heads, so this is a descriptive deployment comparison, not an isolated quantization-loss measurement.
+
+The published FPGA accuracy values were produced by the project’s legacy scorer (confidence-ordered class-aware matching with mean 101-point AP); the GPU values use Ultralytics 8.4.150. All numbers remain unchanged. Current board `--accuracy` uses `ultralytics-8.4.150-numpy-v1`; fresh FPGA accuracy runs at confidence 0.3 and 0.001 are needed before replacing the legacy FPGA rows (see [docs/experiments.md](docs/experiments.md#current-detection-evaluator)).
 
 Fast Finetune is the ablation between the two FPGA rows — both are INT8 quantization-calibrated; "Without" is not uncalibrated. The 1,000 Fast Finetune images are user-confirmed metadata (2026-10-22), not a count verified from the export.
 
@@ -109,7 +111,7 @@ Performance source runs `performance_t1_p1_conf030` and `performance_t2_p2_conf0
 - VART latency is mean `execute_async` + wait — not end-to-end latency, pure DPU kernel time, or reciprocal throughput.
 - Power is SOM-total (not carrier-board/wall power and not DPU-only); energy/image is sampled average power divided by application FPS.
 - Single sequential passes only — no repeated-run means or confidence intervals; caches and thermal conditions were not reset and thermal telemetry is absent.
-- Accuracy comes from a custom class-aware greedy evaluator (IoU 0.5 matching for P/R; 101-recall-level AP at IoU 0.50:0.05:0.95; F1 = harmonic mean of macro P/R) — not the official COCO or Ultralytics evaluator.
+- The published KV260 accuracy came from a custom class-aware greedy evaluator (IoU 0.5 matching for P/R; 101-recall-level AP at IoU 0.50:0.05:0.95; F1 = harmonic mean of macro P/R) — the historical legacy scorer, not the official COCO or Ultralytics evaluator and not the current NumPy scorer.
 - Profiling stages overlap across threads, so `wall_pct` can exceed 100% and is not hardware utilization.
 
 Methodology and evidence: [docs/experiments.md](docs/experiments.md). Frozen evidence excerpts: [KV260 evidence](docs/evidence/kv260-facehuman-2026-10-21.json), [T4 context](docs/evidence/t4-facehuman-context.json).

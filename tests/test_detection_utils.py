@@ -152,12 +152,12 @@ class TestDetectionUtils(unittest.TestCase):
             iou_thresholds=np.array([0.5, 0.75], dtype=np.float32),
         )
 
-        self.assertAlmostEqual(metrics["map50"], 1.0)
-        self.assertAlmostEqual(metrics["map50_95"], 0.75)
+        self.assertAlmostEqual(metrics["map50"], 0.995)
+        self.assertAlmostEqual(metrics["map50_95"], 0.74625)
         self.assertAlmostEqual(metrics["precision"], 0.75)
         self.assertAlmostEqual(metrics["recall"], 1.0)
         self.assertAlmostEqual(metrics["per_class"][0]["precision"], 0.5)
-        self.assertAlmostEqual(metrics["per_class"][1]["map50_95"], 0.5)
+        self.assertAlmostEqual(metrics["per_class"][1]["map50_95"], 0.4975)
 
     def test_aggregate_detection_metrics_breaks_score_ties_deterministically(self):
         true_positive = (0, 0.5, np.array([True]), "a.jpg", 0)
@@ -175,7 +175,7 @@ class TestDetectionUtils(unittest.TestCase):
             iou_thresholds=np.array([0.5], dtype=np.float32),
         )
         self.assertEqual(first, second)
-        self.assertAlmostEqual(first["map50"], 1.0)
+        self.assertAlmostEqual(first["map50"], 0.995)
 
 
 if __name__ == "__main__":

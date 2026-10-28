@@ -101,7 +101,9 @@ python3 -m kria_ai yolov26 detection benchmark \
   --output-report reports/facehuman_accuracy_conf0001.txt
 ```
 
-Accuracy mode defaults to a 0.001 confidence threshold so AP is evaluated across the score curve; the two runs above use distinct report paths. The evaluator is a custom class-aware greedy matcher (IoU 0.5 for P/R; 101-recall-level AP at IoU 0.50:0.05:0.95) — not official COCO/Ultralytics evaluation. The text report prints per-class precision/recall/AP; F1 is recorded in the sibling `<report-stem>_profile.json` metrics.
+Accuracy mode defaults to a 0.001 confidence threshold so AP is evaluated across the score curve; the two runs above use distinct report paths.
+
+These commands now execute the current versioned NumPy scorer `ultralytics-8.4.150-numpy-v1` (NumPy only, no new dependency). AP uses upstream class-aware validator matching/deduplication with 101-point interpolated trapezoidal integration; fixed-confidence P/R uses a separate class-agnostic geometric confusion-matrix matcher (strict score > run floor, IoU > 0.5, class errors counted FP/FN); F1 is the harmonic mean of macro P/R across all configured classes; board runs aggregate per-worker confusion matrices. The text report prints per-class precision/recall/AP and the evaluator ID; the sibling `<report-stem>_profile.json` records F1 plus `evaluator`, `precision_recall_source`, and `confusion_matrix`. **Running these commands does not reproduce the historical KV260 accuracy values** in the README/experiments tables — those FPGA numbers were produced by the previous confidence-ordered class-aware greedy matcher (the GPU values are Ultralytics 8.4.150, not the legacy scorer) and remain historical until fresh accuracy runs are performed.
 
 ## Profiling Semantics
 

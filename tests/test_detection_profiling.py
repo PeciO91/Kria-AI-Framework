@@ -206,6 +206,11 @@ class TestDetectionConsumerProfiling(unittest.TestCase):
         self.assertAlmostEqual(record[1], 0.7310586, places=6)
         np.testing.assert_array_equal(record[2], [True, True])
         self.assertEqual(record[3:], ("image.jpg", 0))
+        np.testing.assert_array_equal(result[7], [[1, 0, 0], [0, 0, 0], [0, 0, 0]])
+        metrics = benchmark._accuracy_metrics([result], 2, (0.5, 0.75))
+        self.assertEqual(metrics["precision"], 0.5)
+        self.assertEqual(metrics["recall"], 0.5)
+        self.assertAlmostEqual(metrics["map50"], 0.995)
         self.assertEqual(output.get()[0], "image.jpg")
 
     def test_consumer_total_includes_progress_update(self):

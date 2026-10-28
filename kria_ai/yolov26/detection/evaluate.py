@@ -11,6 +11,7 @@ except ImportError:
 
 
 DETECTION_IOU_THRESHOLDS = tuple(0.5 + 0.05 * index for index in range(10))
+DETECTION_EVALUATOR = "ultralytics-8.4.150-numpy-v1"
 
 
 def _require_numpy():
@@ -109,12 +110,42 @@ def box_iou_matrix(prediction_boxes, ground_truth_boxes):
     prediction_area = prediction_size[:, 0] * prediction_size[:, 1]
     ground_truth_area = ground_truth_size[:, 0] * ground_truth_size[:, 1]
     union = prediction_area[:, None] + ground_truth_area[None, :] - intersection
-    return np.divide(
-        intersection,
-        union,
-        out=np.zeros_like(intersection, dtype=np.float32),
-        where=union > 0.0,
-    )
+    return intersection / (union + 1e-7)
+
+
+def _detection_arrays(
+    prediction_classes,
+    prediction_scores,
+    prediction_boxes,
+    ground_truth_classes,
+    ground_truth_boxes,
+):
+    _require_numpy()
+    prediction_classes = np.asarray(prediction_classes, dtype=np.int32)
+    prediction_scores = np.asarray(prediction_scores, dtype=np.float32)
+    predictions = _box_array(prediction_boxes, "prediction_boxes")
+    ground_truth_classes = np.asarray(ground_truth_classes, dtype=np.int32)
+    ground_truths = _box_array(ground_truth_boxes, "ground_truth_boxes")
+    if prediction_classes.shape != prediction_scores.shape or prediction_classes.ndim != 1:
+        raise ValueError("prediction classes and scores must be equally sized vectors")
+    if len(predictions) != len(prediction_classes):
+        raise ValueError("prediction boxes, classes, and scores must have equal lengths")
+    if ground_truth_classes.ndim != 1 or len(ground_truths) != len(ground_truth_classes):
+        raise ValueError("ground-truth boxes and classes must have equal lengths")
+    if not np.all(np.isfinite(prediction_scores)):
+        raise ValueError("prediction scores must be finite")
+    return prediction_classes, prediction_scores, predictions, ground_truth_classes, ground_truths
+
+
+def _match_iou_pairs(iou, threshold, *, strict=False, resort=False):
+    pairs = np.column_stack(np.nonzero(iou > threshold if strict else iou >= threshold))
+    if len(pairs) > 1:
+        pairs = pairs[iou[pairs[:, 0], pairs[:, 1]].argsort()[::-1]]
+        pairs = pairs[np.unique(pairs[:, 1], return_index=True)[1]]
+        if resort:
+            pairs = pairs[iou[pairs[:, 0], pairs[:, 1]].argsort()[::-1]]
+        pairs = pairs[np.unique(pairs[:, 0], return_index=True)[1]]
+    return pairs
 
 
 def match_detection_predictions(
@@ -125,53 +156,72 @@ def match_detection_predictions(
     ground_truth_boxes,
     iou_thresholds=DETECTION_IOU_THRESHOLDS,
 ):
-    _require_numpy()
-    prediction_classes = np.asarray(prediction_classes, dtype=np.int32)
-    prediction_scores = np.asarray(prediction_scores, dtype=np.float32)
-    predictions = _box_array(prediction_boxes, "prediction_boxes")
-    ground_truth_classes = np.asarray(ground_truth_classes, dtype=np.int32)
-    ground_truths = _box_array(ground_truth_boxes, "ground_truth_boxes")
+    prediction_classes, _, predictions, ground_truth_classes, ground_truths = _detection_arrays(
+        prediction_classes, prediction_scores, prediction_boxes,
+        ground_truth_classes, ground_truth_boxes,
+    )
     thresholds = np.asarray(iou_thresholds, dtype=np.float32)
-    if prediction_classes.shape != prediction_scores.shape or prediction_classes.ndim != 1:
-        raise ValueError("prediction classes and scores must be equally sized vectors")
-    if len(predictions) != len(prediction_classes):
-        raise ValueError("prediction boxes, classes, and scores must have equal lengths")
-    if ground_truth_classes.ndim != 1 or len(ground_truths) != len(ground_truth_classes):
-        raise ValueError("ground-truth boxes and classes must have equal lengths")
     if thresholds.ndim != 1 or not len(thresholds):
         raise ValueError("iou_thresholds must be a non-empty vector")
-    if np.any((thresholds <= 0.0) | (thresholds > 1.0)):
+    if not np.all(np.isfinite(thresholds)) or np.any((thresholds <= 0.0) | (thresholds > 1.0)):
         raise ValueError("IoU thresholds must be in (0, 1]")
-
     matches = np.zeros((len(predictions), len(thresholds)), dtype=bool)
     if not len(predictions) or not len(ground_truths):
         return matches
-    iou = box_iou_matrix(predictions, ground_truths)
-    prediction_order = np.argsort(-prediction_scores, kind="stable")
+    iou = box_iou_matrix(predictions, ground_truths).T
+    iou *= ground_truth_classes[:, None] == prediction_classes
     for threshold_index, threshold in enumerate(thresholds):
-        matched_ground_truths = np.zeros(len(ground_truths), dtype=bool)
-        for prediction_index in prediction_order:
-            candidates = np.where(
-                (ground_truth_classes == prediction_classes[prediction_index])
-                & ~matched_ground_truths
-            )[0]
-            if not len(candidates):
-                continue
-            candidate_iou = iou[prediction_index, candidates]
-            best_ground_truth = candidates[int(np.argmax(candidate_iou))]
-            if iou[prediction_index, best_ground_truth] >= threshold:
-                matches[prediction_index, threshold_index] = True
-                matched_ground_truths[best_ground_truth] = True
+        pairs = _match_iou_pairs(iou, threshold)
+        matches[pairs[:, 1], threshold_index] = True
     return matches
 
 
+def detection_confusion_matrix(
+    prediction_classes,
+    prediction_scores,
+    prediction_boxes,
+    ground_truth_classes,
+    ground_truth_boxes,
+    num_classes,
+    confidence_threshold=0.3,
+    iou_threshold=0.5,
+):
+    prediction_classes, scores, predictions, ground_truth_classes, ground_truths = _detection_arrays(
+        prediction_classes, prediction_scores, prediction_boxes,
+        ground_truth_classes, ground_truth_boxes,
+    )
+    if num_classes <= 0:
+        raise ValueError("num_classes must be positive")
+    for classes in (prediction_classes, ground_truth_classes):
+        if np.any((classes < 0) | (classes >= num_classes)):
+            raise ValueError("class IDs must be within the configured class range")
+    if not 0.0 <= confidence_threshold <= 1.0 or not 0.0 < iou_threshold <= 1.0:
+        raise ValueError("confidence and IoU thresholds must be in [0, 1] and (0, 1]")
+    keep = scores > confidence_threshold
+    prediction_classes, predictions = prediction_classes[keep], predictions[keep]
+    matrix = np.zeros((num_classes + 1, num_classes + 1), dtype=np.int64)
+    iou = box_iou_matrix(predictions, ground_truths).T
+    pairs = _match_iou_pairs(iou, iou_threshold, strict=True, resort=True)
+    matched_ground_truths = np.zeros(len(ground_truths), dtype=bool)
+    matched_predictions = np.zeros(len(predictions), dtype=bool)
+    matched_ground_truths[pairs[:, 0]] = True
+    matched_predictions[pairs[:, 1]] = True
+    np.add.at(matrix, (
+        prediction_classes[pairs[:, 1]], ground_truth_classes[pairs[:, 0]],
+    ), 1)
+    np.add.at(matrix, (num_classes, ground_truth_classes[~matched_ground_truths]), 1)
+    np.add.at(matrix, (prediction_classes[~matched_predictions], num_classes), 1)
+    return matrix
+
+
 def _compute_ap(recall, precision):
+    recall, precision = np.asarray(recall), np.asarray(precision)
+    recall_curve = np.concatenate(([0.0], recall, [recall[-1] if len(recall) else 1.0], [1.0]))
+    precision_curve = np.concatenate(([1.0], precision, [0.0], [0.0]))
+    precision_curve = np.maximum.accumulate(precision_curve[::-1])[::-1]
     recall_levels = np.linspace(0.0, 1.0, 101)
-    interpolated = [
-        np.max(precision[recall >= level]) if np.any(recall >= level) else 0.0
-        for level in recall_levels
-    ]
-    return float(np.mean(interpolated))
+    integrate = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    return float(integrate(np.interp(recall_levels, recall_curve, precision_curve), recall_levels))
 
 
 def aggregate_detection_metrics(
@@ -179,27 +229,31 @@ def aggregate_detection_metrics(
     ground_truth_counts,
     num_classes,
     iou_thresholds=DETECTION_IOU_THRESHOLDS,
+    *,
+    confusion_matrix=None,
 ):
     _require_numpy()
     thresholds = np.asarray(iou_thresholds, dtype=np.float32)
     records = list(evaluation_records)
+    if records and all(len(record) > 4 for record in records):
+        records.sort(key=lambda record: (str(record[3]), int(record[4])))
+    order = np.argsort(-np.asarray([record[1] for record in records], dtype=np.float32))
+    records = [records[index] for index in order]
+    matrix = None if confusion_matrix is None else np.asarray(confusion_matrix)
+    if matrix is not None:
+        if matrix.shape != (num_classes + 1, num_classes + 1):
+            raise ValueError("confusion_matrix must include all classes and a background row/column")
+        expected_counts = [ground_truth_counts.get(class_id, 0) for class_id in range(num_classes)]
+        if not np.array_equal(matrix.sum(axis=0)[:num_classes], expected_counts):
+            raise ValueError("confusion_matrix ground-truth counts do not match evaluation records")
     per_class = {}
     class_ap = []
     class_precision = []
     class_recall = []
     for class_id in range(num_classes):
         ground_truth_count = int(ground_truth_counts.get(class_id, 0))
-        if ground_truth_count == 0:
-            continue
         class_records = [record for record in records if int(record[0]) == class_id]
-        class_records.sort(
-            key=lambda record: (
-                -float(record[1]),
-                str(record[3]) if len(record) > 3 else "",
-                int(record[4]) if len(record) > 4 else 0,
-            )
-        )
-        if class_records:
+        if class_records and ground_truth_count:
             correct = np.stack(
                 [np.asarray(record[2], dtype=bool) for record in class_records]
             )
@@ -224,26 +278,40 @@ def aggregate_detection_metrics(
             average_precision = np.zeros(len(thresholds), dtype=np.float64)
             precision50 = 0.0
             recall50 = 0.0
+        counts = {}
+        if matrix is not None:
+            true_positive = int(matrix[class_id, class_id])
+            predictions = int(matrix[class_id, :].sum())
+            targets = int(matrix[:, class_id].sum())
+            precision50 = true_positive / predictions if predictions else 0.0
+            recall50 = true_positive / targets if targets else 0.0
+            counts = {
+                "tp": true_positive, "fp": predictions - true_positive,
+                "fn": targets - true_positive,
+            }
         per_class[class_id] = {
             "ground_truths": ground_truth_count,
-            "predictions": len(class_records),
+            "predictions": int(matrix[class_id, :].sum()) if matrix is not None else len(class_records),
             "precision": precision50,
             "recall": recall50,
             "map50": float(average_precision[0]),
             "map50_95": float(np.mean(average_precision)),
+            **counts,
         }
-        class_ap.append(average_precision)
-        class_precision.append(precision50)
-        class_recall.append(recall50)
+        if ground_truth_count:
+            class_ap.append(average_precision)
+        if matrix is not None or ground_truth_count:
+            class_precision.append(precision50)
+            class_recall.append(recall50)
 
     if class_ap:
         average_precision = np.stack(class_ap)
         map50 = float(np.mean(average_precision[:, 0]))
         map50_95 = float(np.mean(average_precision))
-        precision = float(np.mean(class_precision))
-        recall = float(np.mean(class_recall))
     else:
-        map50 = map50_95 = precision = recall = 0.0
+        map50 = map50_95 = 0.0
+    precision = float(np.mean(class_precision)) if class_precision else 0.0
+    recall = float(np.mean(class_recall)) if class_recall else 0.0
     f1 = 2.0 * precision * recall / max(precision + recall, 1e-16)
     return {
         "precision": precision,
@@ -253,6 +321,10 @@ def aggregate_detection_metrics(
         "map50_95": map50_95,
         "per_class": per_class,
         "iou_thresholds": [float(value) for value in thresholds],
+        "evaluator": DETECTION_EVALUATOR,
+        "numpy_version": np.__version__,
+        "precision_recall_source": "confusion_matrix" if matrix is not None else "ap_matches_at_input_confidence",
+        "confusion_matrix": matrix.tolist() if matrix is not None else None,
     }
 
 
